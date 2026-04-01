@@ -1,0 +1,16 @@
+# ============================================================
+# Σ.Match Sprint 1 基建层 Python 依赖
+# 安装: pip install -r requirements.txt
+# ============================================================
+
+# --- PostgreSQL ---
+psycopg2-binary>=2.9.9       # PostgreSQL 驱动 (二进制预编译版)
+
+# --- Milvus ---
+pymilvus>=2.4.0              # Milvus Python SDK
+
+# --- Redis ---
+redis>=5.0.0                 # Redis Python 客户端
+
+# --- 工具 ---
+python-dotenv>=1.0.0         # .env 文件加载

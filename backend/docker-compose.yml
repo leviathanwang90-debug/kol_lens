@@ -1,0 +1,174 @@
+##############################################################################
+# Σ.Match 基建层 Docker Compose — Sprint 1
+# 服务清单: PostgreSQL 15 + Milvus 2.4 (Standalone) + Redis 7
+# 依赖组件: etcd (Milvus 元数据) + MinIO (Milvus 对象存储)
+#
+# 启动命令:  docker-compose up -d
+# 停止命令:  docker-compose down
+# 清除数据:  docker-compose down -v
+##############################################################################
+
+version: "3.8"
+
+services:
+  # ============================================================
+  # PostgreSQL 15 — 关系型数据库
+  # ============================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: sigma_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sigma_match}
+      POSTGRES_USER: ${POSTGRES_USER:-sigma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sigma_secret_2026}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sigma} -d ${POSTGRES_DB:-sigma_match}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sigma_net
+
+  # ============================================================
+  # Redis 7 — 缓存 + 消息代理 + 任务状态存储
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: sigma_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-sigma_redis_2026}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-sigma_redis_2026}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sigma_net
+
+  # ============================================================
+  # etcd — Milvus 元数据存储
+  # ============================================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.11
+    container_name: sigma_etcd
+    restart: unless-stopped
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"  # 4GB
+      ETCD_SNAPSHOT_COUNT: "50000"
+    command: >
+      etcd
+      --advertise-client-urls=http://etcd:2379
+      --listen-client-urls=http://0.0.0.0:2379
+      --data-dir=/etcd
+      --initial-advertise-peer-urls=http://etcd:2380
+      --listen-peer-urls=http://0.0.0.0:2380
+      --initial-cluster=default=http://etcd:2380
+      --name=default
+    volumes:
+      - etcd_data:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - sigma_net
+
+  # ============================================================
+  # MinIO — Milvus 对象存储 (S3 兼容)
+  # ============================================================
+  minio:
+    image: minio/minio:RELEASE.2024-01-01T16-36-33Z
+    container_name: sigma_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    command: minio server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - sigma_net
+
+  # ============================================================
+  # Milvus 2.4 Standalone — 向量数据库
+  # ============================================================
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: sigma_milvus
+    restart: unless-stopped
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    command: ["milvus", "run", "standalone"]
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "${MILVUS_METRICS_PORT:-9091}:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+    networks:
+      - sigma_net
+
+# ============================================================
+# 持久化卷
+# ============================================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  etcd_data:
+    driver: local
+  minio_data:
+    driver: local
+  milvus_data:
+    driver: local
+
+# ============================================================
+# 网络
+# ============================================================
+networks:
+  sigma_net:
+    driver: bridge
