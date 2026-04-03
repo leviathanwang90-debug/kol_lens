@@ -12,6 +12,7 @@
 kol_lens/
 ├── docs/                          # 项目文档
 │   ├── SigmaMatch_Frontend_PRD.md           # 前端产品需求文档（PRD）
+│   ├── Newcomer_Onboarding_Guide.md         # 新人上手指南（建议先读）
 │   ├── SigmaMatch_Development_Roadmap.md    # 开发路线图（6 Sprint）
 │   ├── SigmaMatch_Sprint_Tasklist.md        # 详细任务清单（74 个任务）
 │   ├── backend_logic_summary.md             # 后端逻辑摘要
