@@ -18,14 +18,34 @@ Sprint 1 · Task 1.3.1 ~ 1.3.3
 """
 
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import logging
+import sys
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import redis
-
 from config import redis_config
+
+
+def _load_redis_client_module():
+    """显式加载第三方 redis 客户端，避免与当前本地包同名冲突。"""
+    project_root = Path(__file__).resolve().parents[1]
+    search_paths = [
+        path for path in sys.path
+        if Path(path or ".").resolve() != project_root
+    ]
+    spec = importlib.machinery.PathFinder.find_spec("redis", search_paths)
+    if spec is None or spec.loader is None:
+        raise ImportError("未找到第三方 redis 客户端依赖。")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+redis_client = _load_redis_client_module()
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +64,14 @@ class RedisManager:
     """Redis 连接管理器"""
 
     def __init__(self):
-        self._client: Optional[redis.Redis] = None
+        self._client: Optional[redis_client.Redis] = None
 
     def connect(self) -> None:
         """建立 Redis 连接"""
         if self._client is not None:
             return
 
-        self._client = redis.Redis(
+        self._client = redis_client.Redis(
             host=redis_config.host,
             port=redis_config.port,
             password=redis_config.password,
@@ -73,7 +93,7 @@ class RedisManager:
             logger.info("Redis 连接已关闭")
 
     @property
-    def client(self) -> redis.Redis:
+    def client(self) -> redis_client.Redis:
         """获取 Redis 客户端实例"""
         if self._client is None:
             self.connect()

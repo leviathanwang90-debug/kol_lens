@@ -12,5 +12,14 @@ pymilvus>=2.4.0              # Milvus Python SDK
 # --- Redis ---
 redis>=5.0.0                 # Redis Python 客户端
 
+# --- Web API ---
+fastapi>=0.115.0             # 后端服务框架
+uvicorn>=0.30.0              # ASGI 运行器
+openai>=1.75.0               # OpenAI 兼容 LLM 客户端（用于意图解析）
+
+# --- 测试与数值计算 ---
+numpy>=1.26.0                # 查询向量拼装与归一化
+httpx>=0.28.0                # FastAPI TestClient 依赖
+
 # --- 工具 ---
 python-dotenv>=1.0.0         # .env 文件加载
