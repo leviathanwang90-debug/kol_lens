@@ -343,6 +343,32 @@ class MilvusManager:
         col.flush()
         logger.info("删除 %d 条向量数据", len(ids))
 
+    def get_entities_by_ids(
+        self,
+        ids: List[int],
+        output_fields: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """按 ID 批量读取实体字段，支持向量字段输出。"""
+        if not ids:
+            return []
+        col = self.get_collection()
+        fields = output_fields or [
+            "id",
+            "followers",
+            "region",
+            "gender",
+            "ad_ratio",
+            FIELD_FACE,
+            FIELD_SCENE,
+            FIELD_STYLE,
+        ]
+        expr = f"id in {list(dict.fromkeys(int(item) for item in ids))}"
+        rows = col.query(expr=expr, output_fields=fields, consistency_level="Strong")
+        results = [dict(row) for row in rows]
+        order_map = {int(value): index for index, value in enumerate(ids)}
+        results.sort(key=lambda item: order_map.get(int(item.get("id", -1)), len(order_map)))
+        return results
+
     # ================================================================
     # 混合检索 (Hybrid Search)
     # ================================================================

@@ -25,4 +25,5 @@ env/
 *.log
 
 # Docker 数据卷 (不提交)
-data/
+data/*
+!data/pgy_category_tree.json

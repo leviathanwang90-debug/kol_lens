@@ -264,6 +264,66 @@ class Database:
             cur.execute(sql, params)
             return [dict(r) for r in cur.fetchall()]
 
+    def get_campaign_by_id(self, campaign_id: int) -> Optional[Dict]:
+        """按 campaign_id 获取单个任务"""
+        sql = """
+            SELECT * FROM campaign_history
+            WHERE campaign_id = %s
+            LIMIT 1
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (campaign_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_campaigns_by_operator(
+        self,
+        operator_id: int,
+        brand_name: Optional[str] = None,
+        spu_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """查询某个操作人的历史任务，可按品牌/SPU 进一步过滤。"""
+        sql = """
+            SELECT * FROM campaign_history
+            WHERE operator_id = %s
+        """
+        params: List[Any] = [operator_id]
+        if brand_name:
+            sql += " AND brand_name = %s"
+            params.append(brand_name)
+        if spu_name:
+            sql += " AND spu_name = %s"
+            params.append(spu_name)
+        sql += " ORDER BY created_at DESC"
+
+        with self.get_cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_campaigns_by_role(
+        self,
+        operator_role: int,
+        brand_name: Optional[str] = None,
+        spu_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """查询某个角色的历史任务，可按品牌/SPU 进一步过滤。"""
+        sql = """
+            SELECT * FROM campaign_history
+            WHERE operator_role = %s
+        """
+        params: List[Any] = [operator_role]
+        if brand_name:
+            sql += " AND brand_name = %s"
+            params.append(brand_name)
+        if spu_name:
+            sql += " AND spu_name = %s"
+            params.append(spu_name)
+        sql += " ORDER BY created_at DESC"
+
+        with self.get_cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return [dict(r) for r in cur.fetchall()]
+
     # ================================================================
     # export_dictionary CRUD
     # ================================================================
@@ -373,6 +433,18 @@ class Database:
         with self.get_cursor() as cur:
             cur.execute(sql, (campaign_id,))
             return [dict(r) for r in cur.fetchall()]
+
+    def get_fulfillment_record(self, record_id: int) -> Optional[Dict]:
+        """按 record_id 获取单条履约记录详情"""
+        sql = """
+            SELECT * FROM fulfillment_records
+            WHERE record_id = %s
+            LIMIT 1
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (record_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     def get_influencer_history(self, influencer_id: int) -> List[Dict]:
         """获取达人的全部履约历史（跨任务）"""

@@ -1,177 +1,227 @@
-/*
- * Design: Dark Constellation (暗夜星图)
- * Page: 达人资产库与履约中心 /library
- * Layout: Top filter bar + Data table + Side drawer + Bottom action panel
- */
-
-import { Navbar } from "@/components/Navbar";
-import { ASSETS } from "@/lib/constants";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { motion, AnimatePresence } from "framer-motion";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  Search,
-  Filter,
-  Download,
-  Send as SendIcon,
-  ShoppingCart,
-  X,
-  ChevronRight,
-  Clock,
-  FileText,
-  Package,
-  CheckSquare,
-  Square,
-  Database,
-  Calendar,
-  User,
-  Building2,
-  Tag,
-  Upload,
-  CheckCircle2,
   AlertCircle,
-  HelpCircle,
-  ArrowRight,
+  Building2,
+  Calendar,
+  Database,
+  Filter,
+  RefreshCw,
+  Search,
+  Sparkles,
+  User,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
-// ===== Types =====
-interface LibraryInfluencer {
-  id: string;
-  name: string;
-  avatar: string;
-  platform: string;
-  followers: string;
-  brand: string;
-  spu: string;
-  addedBy: string;
-  addedRole: string;
-  addedAt: string;
-  tags: string[];
-  selected: boolean;
+import { Navbar } from "@/components/Navbar";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  getLibraryHistory,
+  listLibrary,
+  type FeedbackEvidenceExample,
+  type FulfillmentRecordDetail,
+  type LibraryHistoryResult,
+  type LibraryHistoryTimelineItem,
+  type LibraryInfluencerItem,
+} from "@/lib/api";
+
+interface FiltersState {
+  brand_name: string;
+  spu_name: string;
+  region: string;
+  gender: string;
+  tags: string;
+  followers_min: string;
+  followers_max: string;
 }
 
-interface HistoryEvent {
-  id: string;
-  type: "commit" | "invite" | "order";
-  date: string;
-  title: string;
-  detail: string;
+function formatFollowers(value: unknown) {
+  const numeric = Number(String(value ?? "").replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(numeric) || numeric <= 0) return "-";
+  if (numeric >= 100000000) return `${(numeric / 100000000).toFixed(1)}亿`;
+  if (numeric >= 10000) return `${(numeric / 10000).toFixed(1)}万`;
+  return `${numeric}`;
 }
 
-// ===== Mock Data =====
-const MOCK_LIBRARY: LibraryInfluencer[] = [
-  {
-    id: "lib_001", name: "时尚小鱼", avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop",
-    platform: "小红书", followers: "52.3万", brand: "某奶粉品牌", spu: "高端系列A段",
-    addedBy: "张策划", addedRole: "策划", addedAt: "2026-03-15", tags: ["高冷风", "时尚穿搭"],
-    selected: false,
-  },
-  {
-    id: "lib_002", name: "美妆达人Lily", avatar: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=80&h=80&fit=crop",
-    platform: "小红书", followers: "38.1万", brand: "某奶粉品牌", spu: "高端系列A段",
-    addedBy: "李采购", addedRole: "采购", addedAt: "2026-03-14", tags: ["美妆", "护肤"],
-    selected: false,
-  },
-  {
-    id: "lib_003", name: "生活家小王", avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop",
-    platform: "小红书", followers: "25.6万", brand: "某护肤品牌", spu: "精华液系列",
-    addedBy: "王客户", addedRole: "客户", addedAt: "2026-03-12", tags: ["生活方式", "家居"],
-    selected: false,
-  },
-  {
-    id: "lib_004", name: "穿搭博主CC", avatar: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=80&h=80&fit=crop",
-    platform: "小红书", followers: "67.8万", brand: "某奶粉品牌", spu: "高端系列A段",
-    addedBy: "张策划", addedRole: "策划", addedAt: "2026-03-10", tags: ["穿搭", "高冷风"],
-    selected: false,
-  },
-  {
-    id: "lib_005", name: "探店小达人", avatar: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=80&h=80&fit=crop",
-    platform: "小红书", followers: "15.2万", brand: "某护肤品牌", spu: "精华液系列",
-    addedBy: "李采购", addedRole: "采购", addedAt: "2026-03-08", tags: ["探店", "美食"],
-    selected: false,
-  },
-];
+function normalizeTags(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
 
-const MOCK_HISTORY: HistoryEvent[] = [
-  { id: "h1", type: "commit", date: "2026-03-15", title: "入库操作", detail: "张策划将 3 位达人入库至「高端系列A段」" },
-  { id: "h2", type: "invite", date: "2026-03-16", title: "批量邀约", detail: "向 3 位达人发送合作邀约" },
-  { id: "h3", type: "order", date: "2026-03-18", title: "批量下单", detail: "对 2 位达人完成下单操作" },
-  { id: "h4", type: "commit", date: "2026-03-20", title: "入库操作", detail: "王客户将 2 位达人入库至「精华液系列」" },
-];
+function normalizeExamples(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
+}
 
-// ===== Sub-components =====
+function renderEvidenceLabel(item: FeedbackEvidenceExample | Record<string, unknown>) {
+  const displayName = String((item as FeedbackEvidenceExample).display_name || (item as Record<string, unknown>).display_name || (item as Record<string, unknown>).internal_id || "未知达人");
+  const tags = normalizeTags((item as FeedbackEvidenceExample).tags || (item as Record<string, unknown>).tags);
+  const sourceBucket = String((item as FeedbackEvidenceExample).source_bucket || (item as Record<string, unknown>).source_bucket || "current");
+  const roleName = String((item as FeedbackEvidenceExample).role_name || (item as Record<string, unknown>).role_name || "");
+  const timeDecay = Number((item as FeedbackEvidenceExample).time_decay_factor || (item as Record<string, unknown>).time_decay_factor || 0);
+  const freshness = Number((item as FeedbackEvidenceExample).campaign_freshness_factor || (item as Record<string, unknown>).campaign_freshness_factor || 0);
+  const stage = String((item as FeedbackEvidenceExample).brand_stage || (item as Record<string, unknown>).brand_stage || "");
+  const suffix = [
+    tags.length ? tags.slice(0, 2).join(" / ") : "",
+    roleName,
+    sourceBucket === "history" && timeDecay > 0 ? `时间衰减 ${timeDecay.toFixed(2)}` : "",
+    sourceBucket === "history" && freshness > 0 ? `新鲜度 ${freshness.toFixed(2)}` : "",
+    stage ? `阶段 ${stage}` : "",
+  ].filter(Boolean);
+  return `${displayName}${suffix.length ? ` · ${suffix.join(" · ")}` : ""}`;
+}
+
+function EvidenceButton({
+  item,
+  onOpenInfluencer,
+}: {
+  item: FeedbackEvidenceExample | Record<string, unknown>;
+  onOpenInfluencer: (influencerId: number, title?: string) => void;
+}) {
+  const influencerId = Number((item as FeedbackEvidenceExample).internal_id || (item as Record<string, unknown>).internal_id || 0);
+  const label = renderEvidenceLabel(item);
+  if (!Number.isFinite(influencerId) || influencerId <= 0) {
+    return <div className="text-muted-foreground">{label}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenInfluencer(influencerId, String((item as FeedbackEvidenceExample).display_name || (item as Record<string, unknown>).display_name || `达人 ${influencerId}`))}
+      className="w-full text-left rounded-lg border border-border/50 bg-card/40 px-3 py-2 hover:border-primary/40 hover:bg-primary/5 transition-colors"
+    >
+      {label}
+    </button>
+  );
+}
 
 function FilterBar({
-  onSearch,
+  keyword,
+  setKeyword,
   filters,
   setFilters,
+  onSearch,
+  loading,
 }: {
-  onSearch: (q: string) => void;
-  filters: { brand: string; role: string; dateFrom: string; dateTo: string };
-  setFilters: (f: typeof filters) => void;
+  keyword: string;
+  setKeyword: (value: string) => void;
+  filters: FiltersState;
+  setFilters: (value: FiltersState) => void;
+  onSearch: () => void;
+  loading: boolean;
 }) {
-  const [query, setQuery] = useState("");
-
   return (
-    <div className="glass-panel rounded-xl p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        {/* Search */}
-        <div className="flex items-center gap-2 flex-1 min-w-[200px] bg-input rounded-lg px-3 py-2 border border-border focus-within:border-primary/30 transition-colors">
-          <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+    <div className="glass-panel rounded-xl p-4 space-y-3">
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex items-center gap-2 flex-1 min-w-[220px] bg-input rounded-lg px-3 py-2 border border-border focus-within:border-primary/30 transition-colors">
+          <Search className="w-4 h-4 text-muted-foreground" />
           <input
-            value={query}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              onSearch(e.target.value);
-            }}
-            placeholder="搜索达人名称..."
-            className="bg-transparent border-none outline-none text-sm text-foreground placeholder:text-muted-foreground/50 font-chinese w-full"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索达人昵称、平台或标签"
+            className="w-full bg-transparent outline-none text-sm"
           />
         </div>
-
-        {/* Brand filter */}
-        <select
-          value={filters.brand}
-          onChange={(e) => setFilters({ ...filters, brand: e.target.value })}
-          className="bg-input border border-border rounded-lg px-3 py-2 text-sm text-foreground font-chinese outline-none focus:border-primary/30"
-        >
-          <option value="">全部品牌</option>
-          <option value="某奶粉品牌">某奶粉品牌</option>
-          <option value="某护肤品牌">某护肤品牌</option>
-        </select>
-
-        {/* Role filter */}
-        <select
-          value={filters.role}
-          onChange={(e) => setFilters({ ...filters, role: e.target.value })}
-          className="bg-input border border-border rounded-lg px-3 py-2 text-sm text-foreground font-chinese outline-none focus:border-primary/30"
-        >
-          <option value="">全部角色</option>
-          <option value="采购">采购</option>
-          <option value="策划">策划</option>
-          <option value="客户">客户</option>
-        </select>
-
-        {/* Date range */}
-        <div className="flex items-center gap-2">
-          <Calendar className="w-4 h-4 text-muted-foreground" />
-          <input
-            type="date"
-            value={filters.dateFrom}
-            onChange={(e) => setFilters({ ...filters, dateFrom: e.target.value })}
-            className="bg-input border border-border rounded-lg px-2 py-2 text-xs text-foreground outline-none focus:border-primary/30"
-          />
-          <span className="text-muted-foreground text-xs">至</span>
-          <input
-            type="date"
-            value={filters.dateTo}
-            onChange={(e) => setFilters({ ...filters, dateTo: e.target.value })}
-            className="bg-input border border-border rounded-lg px-2 py-2 text-xs text-foreground outline-none focus:border-primary/30"
-          />
+        <Button onClick={onSearch} disabled={loading} className="glow-red">
+          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />刷新
+        </Button>
+      </div>
+      <div className="grid md:grid-cols-3 xl:grid-cols-6 gap-3 text-sm">
+        <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="品牌" value={filters.brand_name} onChange={(e) => setFilters({ ...filters, brand_name: e.target.value })} />
+        <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="SPU" value={filters.spu_name} onChange={(e) => setFilters({ ...filters, spu_name: e.target.value })} />
+        <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="地区" value={filters.region} onChange={(e) => setFilters({ ...filters, region: e.target.value })} />
+        <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="性别" value={filters.gender} onChange={(e) => setFilters({ ...filters, gender: e.target.value })} />
+        <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="标签，逗号分隔" value={filters.tags} onChange={(e) => setFilters({ ...filters, tags: e.target.value })} />
+        <div className="grid grid-cols-2 gap-2">
+          <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="粉丝最小" value={filters.followers_min} onChange={(e) => setFilters({ ...filters, followers_min: e.target.value })} />
+          <input className="bg-input border border-border rounded-lg px-3 py-2" placeholder="粉丝最大" value={filters.followers_max} onChange={(e) => setFilters({ ...filters, followers_max: e.target.value })} />
         </div>
       </div>
+    </div>
+  );
+}
+
+function TimelineCard({
+  row,
+  onOpenInfluencer,
+  onOpenRecord,
+}: {
+  row: LibraryHistoryTimelineItem | Record<string, unknown>;
+  onOpenInfluencer: (influencerId: number, title?: string) => void;
+  onOpenRecord: (recordId: number, title?: string) => void;
+}) {
+  const explanation = ((row as LibraryHistoryTimelineItem).history_explanation || (row as Record<string, unknown>).history_explanation || {}) as Record<string, unknown>;
+  const weightChanges = (explanation.weight_changes || {}) as Record<string, unknown>;
+  const promoted = Array.isArray(weightChanges.promoted)
+    ? (weightChanges.promoted as Array<Record<string, unknown>>)
+    : Array.isArray(explanation.promoted)
+      ? (explanation.promoted as Array<Record<string, unknown>>)
+      : [];
+  const demoted = Array.isArray(weightChanges.demoted)
+    ? (weightChanges.demoted as Array<Record<string, unknown>>)
+    : Array.isArray(explanation.demoted)
+      ? (explanation.demoted as Array<Record<string, unknown>>)
+      : [];
+  const focus = promoted[0] || demoted[0] || null;
+  const focusExamples = focus
+    ? [...normalizeExamples(focus.positive_examples), ...normalizeExamples(focus.negative_examples)].slice(0, 3)
+    : [];
+  const influencerCards = Array.isArray((row as LibraryHistoryTimelineItem).influencer_cards)
+    ? ((row as LibraryHistoryTimelineItem).influencer_cards as Array<Record<string, unknown>>)
+    : [];
+
+  return (
+    <div className="rounded-xl border border-border/50 p-4 bg-card/30 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-chinese text-foreground">{String((row as Record<string, unknown>).action_type || "commit")}</div>
+          <div className="text-xs text-muted-foreground mt-1">{String((row as Record<string, unknown>).created_at || "-")}</div>
+        </div>
+        {String((row as Record<string, unknown>).brand_stage || "") && (
+          <span className="px-2 py-1 rounded-md text-[10px] border border-primary/20 bg-primary/10 text-primary">
+            {String((row as Record<string, unknown>).brand_stage)}
+          </span>
+        )}
+      </div>
+      <div className="text-sm font-chinese text-foreground">{String(explanation.summary || "暂无摘要")}</div>
+      {focus && (
+        <div className="rounded-lg border border-border/50 bg-card/40 p-3 text-xs space-y-2">
+          <div className="font-chinese text-primary">关键证据：{String(focus.display_name || focus.key || "-")}</div>
+          <div className="space-y-2">
+            {focusExamples.length === 0 ? <div className="text-muted-foreground">暂无达人证据</div> : focusExamples.map((item, index) => <EvidenceButton key={`evidence-${index}`} item={item} onOpenInfluencer={onOpenInfluencer} />)}
+          </div>
+        </div>
+      )}
+      {influencerCards.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs uppercase tracking-wide text-primary font-display">关联达人</div>
+          <div className="flex flex-wrap gap-2">
+            {influencerCards.slice(0, 6).map((card, index) => (
+              <button
+                key={`influencer-card-${index}`}
+                type="button"
+                onClick={() => onOpenInfluencer(Number(card.internal_id || 0), String(card.display_name || `达人 ${card.internal_id}`))}
+                className="px-3 py-1.5 rounded-lg border border-border/50 bg-card/40 text-xs hover:border-primary/40 hover:bg-primary/5 transition-colors"
+              >
+                {String(card.display_name || card.internal_id || `达人 ${index + 1}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {Number((row as Record<string, unknown>).record_id || 0) > 0 && (
+        <div className="pt-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onOpenRecord(Number((row as Record<string, unknown>).record_id || 0), `${String((row as Record<string, unknown>).action_type || "commit")} 详情`)}
+            className="border-primary/30 text-primary hover:bg-primary/10"
+          >
+            查看履约 / 素材详情
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -179,523 +229,513 @@ function FilterBar({
 function HistoryDrawer({
   open,
   onClose,
-  events,
+  history,
+  title,
+  onOpenInfluencer,
+  onOpenRecord,
 }: {
   open: boolean;
   onClose: () => void;
-  events: HistoryEvent[];
+  history: LibraryHistoryResult | null;
+  title: string;
+  onOpenInfluencer: (influencerId: number, title?: string) => void;
+  onOpenRecord: (recordId: number, title?: string) => void;
 }) {
   if (!open) return null;
 
-  const typeIcons = {
-    commit: Database,
-    invite: SendIcon,
-    order: ShoppingCart,
-  };
-
-  const typeColors = {
-    commit: "text-primary",
-    invite: "text-brand-gold",
-    order: "text-green-400",
-  };
+  const timeline = Array.isArray(history?.campaign_timeline) ? history.campaign_timeline : [];
+  const campaigns = Array.isArray(history?.brand_campaigns) ? history.brand_campaigns : [];
+  const influencerHistory = Array.isArray(history?.influencer_history) ? history.influencer_history : [];
+  const influencerProfile = (history?.influencer_profile || {}) as Record<string, unknown>;
 
   return (
     <motion.div
       initial={{ x: "100%" }}
       animate={{ x: 0 }}
       exit={{ x: "100%" }}
-      transition={{ type: "spring", damping: 25, stiffness: 200 }}
-      className="fixed top-0 right-0 h-full w-96 z-50 glass-panel border-l border-border/50"
+      transition={{ type: "spring", damping: 22, stiffness: 180 }}
+      className="fixed top-0 right-0 z-50 h-full w-[540px] glass-panel border-l border-border/50"
     >
-      <div className="flex items-center justify-between p-5 border-b border-border/50">
-        <h3 className="font-semibold font-chinese text-foreground">履约历史</h3>
-        <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-primary font-display">library/history</div>
+          <div className="text-lg font-chinese mt-1">{title}</div>
+        </div>
+        <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
           <X className="w-4 h-4" />
         </button>
       </div>
+      <ScrollArea className="h-[calc(100%-72px)]">
+        <div className="p-5 space-y-4">
+          {history?.mode === "influencer_history" && (
+            <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-3">
+              <div className="text-xs uppercase tracking-wide text-primary font-display">达人档案</div>
+              <div>
+                <div className="text-lg font-chinese text-foreground">{String(influencerProfile.nickname || influencerProfile.name || influencerProfile.internal_id || "达人")}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {String(influencerProfile.platform || "未知平台")} · 粉丝 {formatFollowers(influencerProfile.followers)}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {normalizeTags(influencerProfile.tags).length === 0 ? <span className="text-xs text-muted-foreground">暂无标签</span> : normalizeTags(influencerProfile.tags).slice(0, 8).map((tag) => <span key={`profile-tag-${tag}`} className="px-2 py-1 rounded-md bg-card text-xs border border-border/50">{tag}</span>)}
+              </div>
+            </section>
+          )}
 
-      <ScrollArea className="h-[calc(100%-60px)]">
-        <div className="p-5">
-          {/* Timeline */}
-          <div className="relative">
-            {/* Vertical line */}
-            <div className="absolute left-4 top-2 bottom-2 w-px bg-border" />
-
-            <div className="space-y-6">
-              {events.map((event) => {
-                const Icon = typeIcons[event.type];
-                const colorClass = typeColors[event.type];
+          {campaigns.length > 0 && (
+            <section className="space-y-3">
+              <div className="text-xs uppercase tracking-wide text-primary font-display">批次摘要</div>
+              {campaigns.map((item, index) => {
+                const summary = (item.history_summary as Record<string, unknown>) || {};
+                const promoted = Array.isArray(summary.promoted) ? summary.promoted : [];
+                const demoted = Array.isArray(summary.demoted) ? summary.demoted : [];
                 return (
-                  <div key={event.id} className="relative pl-10 group cursor-pointer">
-                    {/* Dot */}
-                    <div className={`absolute left-2.5 top-1 w-3 h-3 rounded-full border-2 border-background ${
-                      event.type === "commit" ? "bg-primary" : event.type === "invite" ? "bg-[#FFB800]" : "bg-green-400"
-                    }`} />
-
-                    <div className="glass-panel rounded-lg p-4 hover:border-primary/30 transition-all">
-                      <div className="flex items-center gap-2 mb-2">
-                        <Icon className={`w-3.5 h-3.5 ${colorClass}`} />
-                        <span className="text-sm font-medium font-chinese text-foreground">
-                          {event.title}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground ml-auto">
-                          {event.date}
-                        </span>
+                  <div key={`campaign-${index}`} className="rounded-xl border border-border/50 p-4 bg-card/30 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-chinese text-foreground">{String(item.spu_name || item.brand_name || `批次 ${index + 1}`)}</div>
+                        <div className="text-xs text-muted-foreground mt-1">{String(item.created_at || "-")}</div>
                       </div>
-                      <p className="text-xs text-muted-foreground font-chinese">
-                        {event.detail}
-                      </p>
-                      <div className="flex items-center gap-1 mt-2 text-[10px] text-primary opacity-0 group-hover:opacity-100 transition-opacity">
-                        查看详情 <ChevronRight className="w-3 h-3" />
-                      </div>
+                      <div className="text-xs text-muted-foreground">timeline {String(item.timeline_count || 0)}</div>
                     </div>
+                    <div className="text-sm font-chinese text-foreground">{String(summary.summary || "暂无推荐偏移摘要")}</div>
+                    {(promoted.length > 0 || demoted.length > 0) && (
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="rounded-lg border border-primary/15 bg-primary/5 p-3">
+                          <div className="text-primary font-chinese mb-2">升权</div>
+                          <div className="space-y-1">
+                            {promoted.slice(0, 2).map((delta, deltaIndex) => (
+                              <div key={`promoted-${deltaIndex}`}>{String((delta as Record<string, unknown>).display_name || (delta as Record<string, unknown>).key || "-")}</div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="rounded-lg border border-amber-400/15 bg-amber-400/5 p-3">
+                          <div className="text-amber-200 font-chinese mb-2">降权</div>
+                          <div className="space-y-1">
+                            {demoted.slice(0, 2).map((delta, deltaIndex) => (
+                              <div key={`demoted-${deltaIndex}`}>{String((delta as Record<string, unknown>).display_name || (delta as Record<string, unknown>).key || "-")}</div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
+            </section>
+          )}
+
+          {timeline.length > 0 && (
+            <section className="space-y-3">
+              <div className="text-xs uppercase tracking-wide text-primary font-display">时间线</div>
+              {timeline.map((row, index) => (
+                <TimelineCard key={`timeline-${index}`} row={row} onOpenInfluencer={onOpenInfluencer} onOpenRecord={onOpenRecord} />
+              ))}
+            </section>
+          )}
+
+          {influencerHistory.length > 0 && (
+            <section className="space-y-3">
+              <div className="text-xs uppercase tracking-wide text-primary font-display">达人完整历史时间线</div>
+              {influencerHistory.map((row, index) => (
+                <TimelineCard key={`influencer-history-${index}`} row={row} onOpenInfluencer={onOpenInfluencer} onOpenRecord={onOpenRecord} />
+              ))}
+            </section>
+          )}
+
+          {campaigns.length === 0 && timeline.length === 0 && influencerHistory.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border/50 p-6 text-sm text-muted-foreground font-chinese">
+              当前查询暂无可展示的历史摘要。
             </div>
-          </div>
+          )}
         </div>
       </ScrollArea>
     </motion.div>
   );
 }
 
-function SmartExportModal({
+function RecordDetailDrawer({
   open,
   onClose,
+  detail,
+  title,
+  onOpenInfluencer,
 }: {
   open: boolean;
   onClose: () => void;
+  detail: FulfillmentRecordDetail | null;
+  title: string;
+  onOpenInfluencer: (influencerId: number, title?: string) => void;
 }) {
-  const [step, setStep] = useState(1);
-  const [headerInput, setHeaderInput] = useState("");
-
-  const mockMappings = [
-    { input: "粉丝数", matched: "粉丝数", status: "auto" as const },
-    { input: "互动中位", matched: "互动中位数(日常)", status: "auto" as const },
-    { input: "视频均赞", matched: "", status: "pending" as const, suggestions: ["视频互动中位数(日常)", "视频千赞比例", "忽略此列"] },
-    { input: "博主昵称", matched: "博主信息", status: "auto" as const },
-    { input: "备注说明", matched: "", status: "pending" as const, suggestions: ["忽略此列"] },
-  ];
-
   if (!open) return null;
+  const campaign = (detail?.campaign || {}) as Record<string, unknown>;
+  const contentDetail = (detail?.content_detail || {}) as Record<string, unknown>;
+  const materialAssets = Array.isArray(detail?.material_assets) ? detail.material_assets : [];
+  const notePreviews = Array.isArray(detail?.note_previews) ? detail.note_previews : [];
+  const influencerCards = Array.isArray(detail?.influencer_cards) ? detail.influencer_cards : [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        className="glass-panel rounded-2xl w-full max-w-2xl max-h-[80vh] overflow-hidden flex flex-col"
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/50">
-          <div className="flex items-center gap-3">
-            <Download className="w-5 h-5 text-primary" />
-            <h3 className="font-semibold font-chinese">智能导出</h3>
-          </div>
-          <div className="flex items-center gap-4">
-            {/* Step indicators */}
-            <div className="flex items-center gap-2">
-              {[1, 2, 3, 4].map((s) => (
-                <div key={s} className="flex items-center gap-1">
-                  <div
-                    className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-data ${
-                      s === step
-                        ? "bg-primary text-primary-foreground"
-                        : s < step
-                        ? "bg-primary/20 text-primary"
-                        : "bg-muted text-muted-foreground"
-                    }`}
-                  >
-                    {s}
-                  </div>
-                  {s < 4 && (
-                    <div className={`w-4 h-px ${s < step ? "bg-primary/40" : "bg-border"}`} />
-                  )}
-                </div>
+    <motion.div
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      transition={{ type: "spring", damping: 22, stiffness: 180 }}
+      className="fixed top-0 right-0 z-[60] h-full w-[560px] glass-panel border-l border-border/50"
+    >
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border/50">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-primary font-display">fulfillment detail</div>
+          <div className="text-lg font-chinese mt-1">{title}</div>
+        </div>
+        <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted transition-colors">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+      <ScrollArea className="h-[calc(100%-72px)]">
+        <div className="p-5 space-y-4">
+          <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-2">
+            <div className="text-xs uppercase tracking-wide text-primary font-display">记录概览</div>
+            <div className="text-lg font-chinese text-foreground">{String(detail?.action_type || "commit")}</div>
+            <div className="text-xs text-muted-foreground">{String(detail?.created_at || "-")}</div>
+            <div className="grid grid-cols-2 gap-3 text-sm pt-2">
+              <div className="rounded-lg border border-border/50 p-3 bg-card/40">
+                <div className="text-xs text-muted-foreground">品牌 / SPU</div>
+                <div className="font-chinese mt-1">{String(campaign.brand_name || "-")} / {String(campaign.spu_name || "-")}</div>
+              </div>
+              <div className="rounded-lg border border-border/50 p-3 bg-card/40">
+                <div className="text-xs text-muted-foreground">品牌阶段</div>
+                <div className="font-chinese mt-1">{String(detail?.brand_stage || "-")}</div>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-3">
+            <div className="text-xs uppercase tracking-wide text-primary font-display">履约内容详情</div>
+            <div className="text-sm font-chinese text-foreground">{String(contentDetail.content_summary || detail?.history_explanation?.summary || "暂无履约内容摘要")}</div>
+            {String(contentDetail.collaboration_note || "") && (
+              <div className="text-xs text-muted-foreground leading-6">{String(contentDetail.collaboration_note || "")}</div>
+            )}
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <div className="rounded-lg border border-primary/15 bg-primary/5 p-3">
+                <div className="text-primary mb-1">已选</div>
+                <div>{Array.isArray(contentDetail.selected_ids) ? contentDetail.selected_ids.length : 0}</div>
+              </div>
+              <div className="rounded-lg border border-amber-400/15 bg-amber-400/5 p-3">
+                <div className="text-amber-200 mb-1">淘汰</div>
+                <div>{Array.isArray(contentDetail.rejected_ids) ? contentDetail.rejected_ids.length : 0}</div>
+              </div>
+              <div className="rounded-lg border border-border/50 bg-card/40 p-3">
+                <div className="text-muted-foreground mb-1">待定</div>
+                <div>{Array.isArray(contentDetail.pending_ids) ? contentDetail.pending_ids.length : 0}</div>
+              </div>
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-3">
+            <div className="text-xs uppercase tracking-wide text-primary font-display">关联达人</div>
+            <div className="flex flex-wrap gap-2">
+              {influencerCards.length === 0 ? <div className="text-xs text-muted-foreground">暂无关联达人</div> : influencerCards.map((card, index) => (
+                <button
+                  key={`detail-influencer-${index}`}
+                  type="button"
+                  onClick={() => onOpenInfluencer(Number((card as Record<string, unknown>).internal_id || 0), String((card as Record<string, unknown>).display_name || `达人 ${index + 1}`))}
+                  className="px-3 py-1.5 rounded-lg border border-border/50 bg-card/40 text-xs hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                >
+                  {String((card as Record<string, unknown>).display_name || (card as Record<string, unknown>).internal_id || `达人 ${index + 1}`)}
+                </button>
               ))}
             </div>
-            <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+          </section>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-6">
-          {step === 1 && (
-            <div className="space-y-4">
-              <h4 className="font-chinese text-sm font-medium text-foreground">
-                Step 1: 录入目标表头
-              </h4>
-              <p className="text-xs text-muted-foreground font-chinese">
-                粘贴您的 Excel 表头（用逗号或制表符分隔），或上传示例空表
-              </p>
-              <textarea
-                value={headerInput}
-                onChange={(e) => setHeaderInput(e.target.value)}
-                placeholder="粉丝数, 互动中位, 视频均赞, 博主昵称, 备注说明"
-                rows={4}
-                className="w-full bg-input border border-border rounded-lg px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 font-chinese outline-none focus:border-primary/30 resize-none"
-              />
-              <div className="flex items-center gap-3">
-                <button className="flex items-center gap-2 px-4 py-2 rounded-lg border border-dashed border-border hover:border-primary/30 text-sm text-muted-foreground font-chinese transition-colors">
-                  <Upload className="w-4 h-4" />
-                  上传示例表格
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === 2 && (
-            <div className="space-y-4">
-              <h4 className="font-chinese text-sm font-medium text-foreground">
-                Step 2: 精准比对匹配
-              </h4>
+          <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-3">
+            <div className="text-xs uppercase tracking-wide text-primary font-display">素材资产</div>
+            {materialAssets.length === 0 ? (
+              <div className="text-xs text-muted-foreground">当前记录尚未提交显式素材资产，已自动回退展示内容笔记预览。</div>
+            ) : (
               <div className="space-y-2">
-                {mockMappings
-                  .filter((m) => m.status === "auto")
-                  .map((m, i) => (
-                    <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-primary/5 border border-primary/10">
-                      <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
-                      <span className="text-sm font-chinese text-foreground">{m.input}</span>
-                      <ArrowRight className="w-3 h-3 text-muted-foreground" />
-                      <span className="text-sm font-chinese text-primary">{m.matched}</span>
-                      <span className="text-[10px] bg-green-400/10 text-green-400 px-2 py-0.5 rounded ml-auto">
-                        已自动匹配
-                      </span>
-                    </div>
-                  ))}
+                {materialAssets.map((asset, index) => (
+                  <div key={`asset-${index}`} className="rounded-lg border border-border/50 bg-card/40 p-3 text-sm space-y-1">
+                    <div className="font-chinese text-foreground">{String((asset as Record<string, unknown>).title || `素材 ${index + 1}`)}</div>
+                    <div className="text-xs text-muted-foreground">{String((asset as Record<string, unknown>).type || "asset")}</div>
+                    {String((asset as Record<string, unknown>).url || "") && (
+                      <a href={String((asset as Record<string, unknown>).url)} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">{String((asset as Record<string, unknown>).url)}</a>
+                    )}
+                  </div>
+                ))}
               </div>
-            </div>
-          )}
+            )}
+          </section>
 
-          {step === 3 && (
-            <div className="space-y-4">
-              <h4 className="font-chinese text-sm font-medium text-foreground">
-                Step 3: AI 语义排异与确认
-              </h4>
-              <div className="space-y-3">
-                {mockMappings
-                  .filter((m) => m.status === "pending")
-                  .map((m, i) => (
-                    <div key={i} className="p-4 rounded-lg border border-border bg-card">
-                      <div className="flex items-center gap-2 mb-3">
-                        <AlertCircle className="w-4 h-4 text-[#FFB800]" />
-                        <span className="text-sm font-chinese text-foreground font-medium">
-                          "{m.input}"
-                        </span>
-                        <HelpCircle className="w-3 h-3 text-muted-foreground" />
-                      </div>
-                      <div className="space-y-2 pl-6">
-                        {m.suggestions?.map((sug, j) => (
-                          <label
-                            key={j}
-                            className="flex items-center gap-2 text-sm font-chinese text-muted-foreground hover:text-foreground cursor-pointer"
-                          >
-                            <input
-                              type="radio"
-                              name={`mapping_${i}`}
-                              className="accent-[#D4001A]"
-                            />
-                            {sug}
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+          <section className="rounded-xl border border-border/50 bg-card/30 p-4 space-y-3">
+            <div className="text-xs uppercase tracking-wide text-primary font-display">内容笔记预览</div>
+            {notePreviews.length === 0 ? (
+              <div className="text-xs text-muted-foreground">暂无可用的合作内容预览。</div>
+            ) : (
+              <div className="space-y-2">
+                {notePreviews.map((note, index) => (
+                  <div key={`note-${index}`} className="rounded-lg border border-border/50 bg-card/40 p-3 text-sm space-y-1">
+                    <div className="font-chinese text-foreground">{String((note as Record<string, unknown>).influencer_name || "达人内容")}</div>
+                    <div className="text-xs text-muted-foreground">{String((note as Record<string, unknown>).note_type || "笔记")} · {String((note as Record<string, unknown>).published_at || "-")}</div>
+                    <div className="text-xs text-muted-foreground">阅读 {String((note as Record<string, unknown>).reads || 0)} · 点赞 {String((note as Record<string, unknown>).likes || 0)}</div>
+                    {String((note as Record<string, unknown>).cover_image_url || "") && (
+                      <a href={String((note as Record<string, unknown>).cover_image_url)} target="_blank" rel="noreferrer" className="text-xs text-primary underline break-all">查看封面素材</a>
+                    )}
+                  </div>
+                ))}
               </div>
-            </div>
-          )}
-
-          {step === 4 && (
-            <div className="text-center py-8">
-              <CheckCircle2 className="w-16 h-16 text-green-400 mx-auto mb-4" />
-              <h4 className="font-chinese text-lg font-medium text-foreground mb-2">
-                导出完成
-              </h4>
-              <p className="text-sm text-muted-foreground font-chinese mb-6">
-                文件已生成，同时已将手动确认的映射关系沉淀至系统字典
-              </p>
-              <Button className="glow-red">
-                <Download className="w-4 h-4 mr-2" />
-                下载 Excel 文件
-              </Button>
-            </div>
-          )}
+            )}
+          </section>
         </div>
-
-        {/* Footer */}
-        {step < 4 && (
-          <div className="border-t border-border/50 px-6 py-4 flex justify-between">
-            <Button
-              variant="outline"
-              onClick={() => setStep(Math.max(1, step - 1))}
-              disabled={step === 1}
-            >
-              上一步
-            </Button>
-            <Button
-              onClick={() => setStep(Math.min(4, step + 1))}
-              className={step === 3 ? "glow-red" : ""}
-            >
-              {step === 3 ? "确认导出" : "下一步"}
-            </Button>
-          </div>
-        )}
-      </motion.div>
-    </div>
+      </ScrollArea>
+    </motion.div>
   );
 }
 
-// ===== Main Page =====
 export default function Library() {
-  const [data, setData] = useState<LibraryInfluencer[]>(MOCK_LIBRARY);
-  const [filters, setFilters] = useState({ brand: "", role: "", dateFrom: "", dateTo: "" });
-  const [showHistory, setShowHistory] = useState(false);
-  const [showExport, setShowExport] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-
-  const filteredData = data.filter((item) => {
-    if (searchQuery && !item.name.includes(searchQuery)) return false;
-    if (filters.brand && item.brand !== filters.brand) return false;
-    if (filters.role && item.addedRole !== filters.role) return false;
-    return true;
+  const [keyword, setKeyword] = useState("");
+  const [filters, setFilters] = useState<FiltersState>({
+    brand_name: "",
+    spu_name: "",
+    region: "",
+    gender: "",
+    tags: "",
+    followers_min: "",
+    followers_max: "",
   });
+  const [items, setItems] = useState<LibraryInfluencerItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerTitle, setDrawerTitle] = useState("历史详情");
+  const [historyResult, setHistoryResult] = useState<LibraryHistoryResult | null>(null);
+  const [influencerDrawerOpen, setInfluencerDrawerOpen] = useState(false);
+  const [influencerDrawerTitle, setInfluencerDrawerTitle] = useState("达人时间线");
+  const [influencerHistoryResult, setInfluencerHistoryResult] = useState<LibraryHistoryResult | null>(null);
+  const [recordDrawerOpen, setRecordDrawerOpen] = useState(false);
+  const [recordDrawerTitle, setRecordDrawerTitle] = useState("履约详情");
+  const [recordDetail, setRecordDetail] = useState<FulfillmentRecordDetail | null>(null);
 
-  const selectedCount = data.filter((d) => d.selected).length;
+  const activeFilterCount = useMemo(
+    () => Object.values(filters).filter(Boolean).length + (keyword ? 1 : 0),
+    [filters, keyword],
+  );
 
-  const toggleSelect = (id: string) => {
-    setData((prev) =>
-      prev.map((d) => (d.id === id ? { ...d, selected: !d.selected } : d))
-    );
+  const loadLibrary = async () => {
+    setLoading(true);
+    try {
+      const response = await listLibrary({
+        keyword,
+        brand_name: filters.brand_name,
+        spu_name: filters.spu_name,
+        region: filters.region,
+        gender: filters.gender,
+        tags: filters.tags,
+        followers_min: filters.followers_min,
+        followers_max: filters.followers_max,
+      });
+      setItems(response.result.items || []);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "资产库加载失败");
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const toggleAll = () => {
-    const allSelected = filteredData.every((d) => d.selected);
-    const ids = new Set(filteredData.map((d) => d.id));
-    setData((prev) =>
-      prev.map((d) => (ids.has(d.id) ? { ...d, selected: !allSelected } : d))
-    );
+  useEffect(() => {
+    void loadLibrary();
+  }, []);
+
+  const openBrandHistory = async (brandName: string, spuName?: string) => {
+    setHistoryLoading(true);
+    try {
+      const response = await getLibraryHistory({ brand_name: brandName, spu_name: spuName });
+      setHistoryResult(response.result);
+      setDrawerTitle(`${brandName}${spuName ? ` / ${spuName}` : ""} 历史摘要`);
+      setDrawerOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "历史查询失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openInfluencerHistory = async (influencerId: number, title?: string) => {
+    if (!Number.isFinite(influencerId) || influencerId <= 0) return;
+    setHistoryLoading(true);
+    try {
+      const response = await getLibraryHistory({ influencer_id: influencerId });
+      setInfluencerHistoryResult(response.result);
+      setInfluencerDrawerTitle(title ? `${title} · 完整时间线` : `达人 ${influencerId} · 完整时间线`);
+      setInfluencerDrawerOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "达人时间线加载失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const openRecordDetail = async (recordId: number, title?: string) => {
+    if (!Number.isFinite(recordId) || recordId <= 0) return;
+    setHistoryLoading(true);
+    try {
+      const response = await getLibraryHistory({ record_id: recordId });
+      setRecordDetail((response.result?.record_detail || null) as FulfillmentRecordDetail | null);
+      setRecordDrawerTitle(title ? `${title} · 履约详情` : `记录 ${recordId} · 履约详情`);
+      setRecordDrawerOpen(true);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "履约详情加载失败");
+    } finally {
+      setHistoryLoading(false);
+    }
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-screen bg-background text-foreground overflow-hidden">
       <Navbar />
-
-      {/* Background */}
-      <div className="fixed inset-0 z-0">
-        <div className="absolute inset-0 bg-gradient-to-br from-background via-background to-primary/[0.02]" />
-      </div>
-
-      <div className="relative z-10 pt-20 pb-24 container">
-        {/* Page header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="font-display text-3xl tracking-wider mb-1">
-              达人<span className="text-primary">资产库</span>
-            </h1>
-            <p className="text-sm text-muted-foreground font-chinese">
-              管理已入库达人、追踪履约历史、智能导出数据
-            </p>
+      <div className="relative z-10 pt-16 pb-12 min-h-screen">
+        <div className="absolute inset-0 bg-gradient-to-br from-background via-background/95 to-background pointer-events-none" />
+        <div className="relative max-w-7xl mx-auto px-6 py-8 space-y-6">
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+            <div>
+              <div className="text-xs uppercase tracking-[0.24em] text-primary font-display">Library & History</div>
+              <h1 className="text-4xl font-display mt-2">达人资产库与推荐复盘</h1>
+              <p className="text-muted-foreground font-chinese mt-2 max-w-3xl">
+                当前页面已接入真实的资产库列表与历史查询接口，可直接查看某个品牌 / SPU 在不同批次中如何发生 tag 权重偏移，并继续下钻到某位达人的完整历史时间线。
+              </p>
+            </div>
+            <div className="glass-panel rounded-xl px-4 py-3 min-w-[240px]">
+              <div className="text-xs uppercase tracking-wide text-primary font-display">Filters</div>
+              <div className="text-sm font-chinese mt-2">已启用 {activeFilterCount} 个筛选条件</div>
+              <div className="text-xs text-muted-foreground mt-1">支持按品牌、SPU、地区、性别、粉丝区间与标签过滤。</div>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Button
-              variant="outline"
-              onClick={() => setShowHistory(true)}
-              className="border-border"
-            >
-              <Clock className="w-4 h-4 mr-2" />
-              履约历史
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => setShowExport(true)}
-              className="border-border"
-            >
-              <Download className="w-4 h-4 mr-2" />
-              智能导出
-            </Button>
-          </div>
-        </div>
 
-        {/* Filter bar */}
-        <div className="mb-4">
           <FilterBar
-            onSearch={setSearchQuery}
+            keyword={keyword}
+            setKeyword={setKeyword}
             filters={filters}
             setFilters={setFilters}
+            onSearch={() => void loadLibrary()}
+            loading={loading}
           />
-        </div>
 
-        {/* Data table */}
-        <div className="glass-panel rounded-xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border/50">
-                <th className="px-4 py-3 text-left w-10">
-                  <button onClick={toggleAll}>
-                    {filteredData.every((d) => d.selected) && filteredData.length > 0 ? (
-                      <CheckSquare className="w-4 h-4 text-primary" />
-                    ) : (
-                      <Square className="w-4 h-4 text-muted-foreground" />
-                    )}
-                  </button>
-                </th>
-                <th className="px-4 py-3 text-left text-xs text-muted-foreground font-chinese font-medium">
-                  达人信息
-                </th>
-                <th className="px-4 py-3 text-left text-xs text-muted-foreground font-chinese font-medium">
-                  品牌 / SPU
-                </th>
-                <th className="px-4 py-3 text-left text-xs text-muted-foreground font-chinese font-medium">
-                  标签
-                </th>
-                <th className="px-4 py-3 text-left text-xs text-muted-foreground font-chinese font-medium">
-                  入库人
-                </th>
-                <th className="px-4 py-3 text-left text-xs text-muted-foreground font-chinese font-medium">
-                  入库时间
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredData.map((item) => (
-                <tr
-                  key={item.id}
-                  className="border-b border-border/30 hover:bg-primary/5 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    <button onClick={() => toggleSelect(item.id)}>
-                      {item.selected ? (
-                        <CheckSquare className="w-4 h-4 text-primary" />
-                      ) : (
-                        <Square className="w-4 h-4 text-muted-foreground" />
-                      )}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={item.avatar}
-                        alt={item.name}
-                        className="w-9 h-9 rounded-full object-cover border border-border"
-                      />
-                      <div>
-                        <div className="font-medium text-foreground font-chinese text-sm">
-                          {item.name}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          {item.platform} · {item.followers}
+          <div className="grid lg:grid-cols-[1fr_320px] gap-6">
+            <div className="glass-panel rounded-2xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-border/50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-primary" />
+                  <span className="font-chinese font-semibold">资产库列表</span>
+                </div>
+                <div className="text-xs text-muted-foreground">共 {items.length} 位达人</div>
+              </div>
+              <ScrollArea className="h-[calc(100vh-280px)]">
+                <div className="divide-y divide-border/40">
+                  {items.length === 0 && !loading && (
+                    <div className="p-8 text-center text-sm text-muted-foreground font-chinese">当前筛选条件下暂无达人。</div>
+                  )}
+                  {items.map((item, index) => {
+                    const brandName = String(item.brand_name || item.brand || "");
+                    const spuName = String(item.spu_name || item.spu || "");
+                    const tags = normalizeTags(item.tags);
+                    return (
+                      <div key={`item-${item.internal_id || index}`} className="p-5 hover:bg-card/30 transition-colors">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-2 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <div className="text-lg font-chinese text-foreground">{String(item.nickname || item.name || item.internal_id || `达人 ${index + 1}`)}</div>
+                              <span className="px-2 py-1 rounded-md text-[10px] bg-primary/10 text-primary border border-primary/20">{String(item.platform || "未知平台")}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                              <span className="inline-flex items-center gap-1"><User className="w-3 h-3" />粉丝 {formatFollowers(item.followers)}</span>
+                              <span className="inline-flex items-center gap-1"><Building2 className="w-3 h-3" />{brandName || "未绑定品牌"}</span>
+                              <span className="inline-flex items-center gap-1"><Calendar className="w-3 h-3" />{String(item.created_at || item.added_at || "-")}</span>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {tags.length === 0 ? <span className="text-xs text-muted-foreground">暂无标签</span> : tags.slice(0, 6).map((tag) => <span key={`${item.internal_id}-${tag}`} className="px-2 py-1 rounded-md bg-card text-xs border border-border/50">{tag}</span>)}
+                            </div>
+                          </div>
+                          <div className="shrink-0 flex flex-col gap-2">
+                            <Button
+                              variant="outline"
+                              disabled={historyLoading || !brandName}
+                              onClick={() => void openBrandHistory(brandName, spuName || undefined)}
+                              className="border-primary/30 text-primary hover:bg-primary/10"
+                            >
+                              <Sparkles className="w-4 h-4 mr-2" />查看推荐偏移
+                            </Button>
+                            {Number(item.internal_id || 0) > 0 && (
+                              <Button
+                                variant="outline"
+                                disabled={historyLoading}
+                                onClick={() => void openInfluencerHistory(Number(item.internal_id || 0), String(item.nickname || item.name || `达人 ${item.internal_id}`))}
+                                className="border-border/50 hover:border-primary/30"
+                              >
+                                查看达人时间线
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-sm text-foreground font-chinese">{item.brand}</div>
-                    <div className="text-xs text-muted-foreground font-chinese">{item.spu}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-1 flex-wrap">
-                      {item.tags.map((tag) => (
-                        <span
-                          key={tag}
-                          className="px-2 py-0.5 rounded text-[10px] bg-primary/10 text-primary border border-primary/15 font-chinese"
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1.5">
-                      <User className="w-3 h-3 text-muted-foreground" />
-                      <span className="text-sm text-foreground font-chinese">{item.addedBy}</span>
-                      <span className="text-[10px] text-muted-foreground">({item.addedRole})</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {item.addedAt}
-                  </td>
-                </tr>
-              ))}
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </div>
 
-              {filteredData.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center">
-                    <Database className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-                    <p className="text-sm text-muted-foreground font-chinese">
-                      暂无匹配的达人数据
-                    </p>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+            <div className="space-y-4">
+              <div className="glass-panel rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Filter className="w-4 h-4 text-primary" />
+                  <div className="text-xs uppercase tracking-wide text-primary font-display">Explainable History</div>
+                </div>
+                <p className="text-sm font-chinese text-foreground">现在 `library/history` 不仅能展示每批次 Fission 的摘要、Rocchio 说明和达人证据，还支持继续下钻到达人完整时间线。</p>
+                <div className="mt-3 text-xs text-muted-foreground space-y-2 font-chinese">
+                  <div>1. 看到哪些 tag 被升权/降权。</div>
+                  <div>2. 区分变化来自本轮反馈还是历史反馈。</div>
+                  <div>3. 点击证据达人，继续查看完整历史时间线。</div>
+                </div>
+              </div>
+              <div className="glass-panel rounded-xl p-4 border border-primary/20 bg-primary/5">
+                <div className="flex items-center gap-2 mb-2">
+                  <AlertCircle className="w-4 h-4 text-primary" />
+                  <div className="text-xs uppercase tracking-wide text-primary font-display">Decay Upgrade</div>
+                </div>
+                <p className="text-sm font-chinese text-foreground">后端已支持按角色、品牌阶段和 campaign 新鲜度做更细粒度衰减，历史证据卡片中会直接显示这些因子的解释线索。</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Bottom batch action panel */}
       <AnimatePresence>
-        {selectedCount > 0 && (
-          <motion.div
-            initial={{ y: 100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 100, opacity: 0 }}
-            className="fixed bottom-0 left-0 right-0 z-40 border-t border-primary/20"
-            style={{
-              background: "oklch(0.1 0.008 25 / 95%)",
-              backdropFilter: "blur(20px)",
-            }}
-          >
-            <div className="container py-4 flex items-center justify-between">
-              <span className="text-sm text-muted-foreground font-chinese">
-                已选择 <span className="text-primary font-data">{selectedCount}</span> 位达人
-              </span>
-              <div className="flex items-center gap-3">
-                <Button
-                  variant="outline"
-                  onClick={() => toast.info("批量邀约功能即将上线", { duration: 2000 })}
-                  className="border-brand-gold/30 text-brand-gold hover:bg-brand-gold/10"
-                >
-                  <SendIcon className="w-4 h-4 mr-2" />
-                  批量邀约
-                </Button>
-                <Button
-                  onClick={() => toast.info("批量下单功能即将上线", { duration: 2000 })}
-                  className="glow-red"
-                >
-                  <ShoppingCart className="w-4 h-4 mr-2" />
-                  批量下单
-                </Button>
-              </div>
-            </div>
-          </motion.div>
-        )}
+        <HistoryDrawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          history={historyResult}
+          title={drawerTitle}
+          onOpenInfluencer={openInfluencerHistory}
+          onOpenRecord={openRecordDetail}
+        />
       </AnimatePresence>
-
-      {/* History Drawer */}
       <AnimatePresence>
-        {showHistory && (
-          <>
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="fixed inset-0 z-40 bg-black/50"
-              onClick={() => setShowHistory(false)}
-            />
-            <HistoryDrawer
-              open={showHistory}
-              onClose={() => setShowHistory(false)}
-              events={MOCK_HISTORY}
-            />
-          </>
-        )}
+        <HistoryDrawer
+          open={influencerDrawerOpen}
+          onClose={() => setInfluencerDrawerOpen(false)}
+          history={influencerHistoryResult}
+          title={influencerDrawerTitle}
+          onOpenInfluencer={openInfluencerHistory}
+          onOpenRecord={openRecordDetail}
+        />
       </AnimatePresence>
-
-      {/* Smart Export Modal */}
-      <SmartExportModal open={showExport} onClose={() => setShowExport(false)} />
+      <AnimatePresence>
+        <RecordDetailDrawer
+          open={recordDrawerOpen}
+          onClose={() => setRecordDrawerOpen(false)}
+          detail={recordDetail}
+          title={recordDrawerTitle}
+          onOpenInfluencer={openInfluencerHistory}
+        />
+      </AnimatePresence>
     </div>
   );
 }

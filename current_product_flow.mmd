@@ -1,0 +1,46 @@
+flowchart TD
+    A[前端入口\nWorkspace / Library\n输入: brand_name, spu_name, operator_id, role] --> B[自然语言需求输入\nraw_text]
+    A --> A1[预加载记忆\nGET /api/v1/spu/memory\nGET /api/v1/user/memory]
+    A1 --> A2[输出\nSPU 推荐特征\n用户私有偏好\n历史已看达人/偏好标签]
+
+    B --> C[意图解析\nPOST /api/v1/intent/parse]
+    C --> C1[输出 intent\nquery_plan\ndata_requirements\nstyle tags\nhard_filters]
+    C1 --> D[前端意图确认面板\n可调 tag 权重 0-2\n可改数据指标范围]
+
+    D --> E[首轮检索\nPOST /api/v1/match/retrieve]
+    E --> E1[向量检索 / 标量过滤]
+    E1 --> E2{库内结果是否足够}
+    E2 -- 是 --> F[返回候选达人列表]
+    E2 -- 否 --> G[外部扩库\nPOST /api/v1/library/expand\n内部可先生成 PGY payload]
+    G --> G1[外部达人入库 + 向量化]
+    G1 --> H{补库后是否足够}
+    H -- 是 --> F
+    H -- 否 --> I[贪心降级\n放宽 tag / filter / query]
+    I --> F
+
+    F --> J[工作台评审\nselected / rejected / pending]
+    J --> K[可解释 Fission\nPOST /api/v1/match/next-batch]
+    A2 --> K
+    D --> K
+    J --> K
+    K --> K1[反馈进化\nRocchio\n当前反馈 + 历史反馈\n角色/品牌阶段/campaign 新鲜度衰减]
+    K1 --> K2[输出\n下一批达人\nweight_changes\npositive_examples\nnegative_examples\nrocchio_meta]
+    K2 --> J
+
+    J --> L[确认入库\nPOST /api/v1/assets/commit]
+    D --> L
+    K2 --> L
+    L --> L1[输出\ncampaign_id\nfulfillment_records\nSPU 记忆更新\n用户记忆更新\nhistory explanation snapshot]
+
+    L1 --> M[资产库列表\nGET /api/v1/library/list]
+    L1 --> N[资产库历史\nGET /api/v1/library/history]
+    N --> N1[查询模式\nbrand+spu / campaign_id / influencer_id / record_id]
+    N1 --> N2[输出\n批次时间线\n达人完整时间线\n履约详情\n素材资产\n历史解释摘要]
+
+    J --> O[全量达人数据补充\nGET /api/v1/creator-data/catalog\nPOST /api/v1/creator-data/enrich]
+    O --> O1[输出\n字段目录\n补充结果表 rows]
+    O1 --> P[字段勾选导出]
+    P --> Q[模板管理\nGET/POST /api/v1/export/templates]
+    P --> R[生成导出文件\nPOST /api/v1/export/creators]
+    Q --> R
+    R --> S[下载 CSV\nGET /api/v1/export/download/file_name]
