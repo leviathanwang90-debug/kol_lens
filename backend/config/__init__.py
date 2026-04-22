@@ -43,14 +43,17 @@ class RedisConfig:
 @dataclass(frozen=True)
 class MilvusConfig:
     """Milvus 连接配置"""
-    host: str = field(default_factory=lambda: os.getenv("MILVUS_HOST", "localhost"))
-    port: int = field(default_factory=lambda: int(os.getenv("MILVUS_PORT", "19530")))
-    collection_name: str = "influencer_multimodal_vectors"
+    host: str = field(default_factory=lambda: os.getenv("QDRANT_HOST", os.getenv("MILVUS_HOST", "localhost")))
+    port: int = field(default_factory=lambda: int(os.getenv("QDRANT_PORT", os.getenv("MILVUS_PORT", "6333"))))
+    url: str = field(default_factory=lambda: os.getenv("QDRANT_URL", ""))
+    api_key: str = field(default_factory=lambda: os.getenv("QDRANT_API_KEY", ""))
+    collection_name: str = field(default_factory=lambda: os.getenv("QDRANT_COLLECTION", "influencer_vectors"))
+    embedding_dim: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "1024")))
 
     # 向量维度定义
-    face_dim: int = 512       # InsightFace 人脸向量
-    scene_dim: int = 768      # CLIP 场景向量
-    style_dim: int = 768      # 时序融合风格向量
+    face_dim: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "1024")))
+    scene_dim: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "1024")))
+    style_dim: int = field(default_factory=lambda: int(os.getenv("EMBEDDING_DIM", "1024")))
 
 
 # 全局单例

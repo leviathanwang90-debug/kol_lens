@@ -15,6 +15,34 @@
 
 -- 启用扩展
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- ============================================================
+-- 0. users / brand_spus / collaborations
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
+    id              SERIAL          PRIMARY KEY,
+    username        VARCHAR(128)    NOT NULL UNIQUE,
+    display_name    VARCHAR(128),
+    created_at      TIMESTAMP       DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS brand_spus (
+    spu_id          SERIAL          PRIMARY KEY,
+    brand_name      VARCHAR(128)    NOT NULL,
+    spu_name        VARCHAR(256)    NOT NULL,
+    base_vector     JSONB           DEFAULT '[]'::jsonb,
+    kol_count       INTEGER         DEFAULT 0,
+    created_at      TIMESTAMP       DEFAULT NOW(),
+    updated_at      TIMESTAMP       DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS collaborations (
+    id              SERIAL          PRIMARY KEY,
+    spu_id          INTEGER         NOT NULL REFERENCES brand_spus(spu_id) ON DELETE CASCADE,
+    influencer_id   INTEGER         NOT NULL,
+    created_at      TIMESTAMP       DEFAULT NOW()
+);
 
 -- ============================================================
 -- 1. influencer_basics — 达人基础信息表
@@ -78,6 +106,17 @@ COMMENT ON COLUMN influencer_basics.ad_ratio_30d IS '近 30 天商单比例，�
 COMMENT ON COLUMN influencer_basics.tags IS '达人标签数组，JSONB 格式，如 ["穿搭","高冷风"]';
 COMMENT ON COLUMN influencer_basics.pricing IS '报价信息，JSONB 格式，含图文CPM、视频CPM等';
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_collaborations_influencer'
+    ) THEN
+        ALTER TABLE collaborations
+            ADD CONSTRAINT fk_collaborations_influencer
+            FOREIGN KEY (influencer_id) REFERENCES influencer_basics(internal_id) ON DELETE CASCADE;
+    END IF;
+END $$;
+
 
 -- ============================================================
 -- 2. campaign_history — 寻星任务历史表
@@ -86,6 +125,8 @@ CREATE TABLE IF NOT EXISTS campaign_history (
     campaign_id             SERIAL          PRIMARY KEY,
     brand_name              VARCHAR(128)    NOT NULL,
     spu_name                VARCHAR(256)    NOT NULL,
+    user_id                 INTEGER,
+    spu_id                  INTEGER,
     operator_id             INTEGER,
     operator_role           SMALLINT        NOT NULL DEFAULT 2,
     selected_influencer_ids JSONB           DEFAULT '[]'::jsonb,
@@ -93,10 +134,37 @@ CREATE TABLE IF NOT EXISTS campaign_history (
     rejected_influencer_ids JSONB           DEFAULT '[]'::jsonb,
     intent_snapshot         JSONB,
     query_vector_snapshot   JSONB,
+    dynamic_intent_vector   JSONB,
     status                  VARCHAR(16)     DEFAULT 'active',
     created_at              TIMESTAMP       DEFAULT NOW(),
     committed_at            TIMESTAMP
 );
+
+ALTER TABLE campaign_history
+    ADD COLUMN IF NOT EXISTS user_id INTEGER;
+ALTER TABLE campaign_history
+    ADD COLUMN IF NOT EXISTS spu_id INTEGER;
+ALTER TABLE campaign_history
+    ADD COLUMN IF NOT EXISTS dynamic_intent_vector JSONB;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_campaign_history_user_id'
+    ) THEN
+        ALTER TABLE campaign_history
+            ADD CONSTRAINT fk_campaign_history_user_id
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'fk_campaign_history_spu_id'
+    ) THEN
+        ALTER TABLE campaign_history
+            ADD CONSTRAINT fk_campaign_history_spu_id
+            FOREIGN KEY (spu_id) REFERENCES brand_spus(spu_id) ON DELETE SET NULL;
+    END IF;
+END $$;
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_campaign_brand_spu
@@ -110,6 +178,8 @@ CREATE INDEX IF NOT EXISTS idx_campaign_status
 
 CREATE INDEX IF NOT EXISTS idx_campaign_created_at
     ON campaign_history (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_campaign_user_spu
+    ON campaign_history (user_id, spu_id);
 
 -- 约束: operator_role 只允许 1(采购), 2(策划), 3(客户)
 ALTER TABLE campaign_history
@@ -151,6 +221,12 @@ CREATE INDEX IF NOT EXISTS idx_export_dict_usage
 -- 模糊搜索索引: 支持 LIKE '%xxx%' 查询
 CREATE INDEX IF NOT EXISTS idx_export_dict_header_trgm
     ON export_dictionary USING GIN (user_input_header gin_trgm_ops);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brand_spu_name
+    ON brand_spus (brand_name, spu_name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_collab_spu_influencer_unique
+    ON collaborations (spu_id, influencer_id);
 
 -- 注: gin_trgm_ops 需要 pg_trgm 扩展，如果不可用则使用普通索引
 -- 如果上面的 GIN 索引创建失败，取消注释下面这行:

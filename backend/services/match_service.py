@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from config import milvus_config
 from services.intent_parser import IntentParserService, intent_parser_service, value_to_text
 from services.pgy_service import _embed_text_to_style_vector, pgy_expansion_service
 
@@ -33,7 +34,7 @@ EXPERIMENT_MODE_CHOICES = {
     EXPERIMENT_MODE_FIELD_TAGS_WEIGHTED,
     EXPERIMENT_MODE_FIELD_TAGS_EXPLICIT_WEIGHT_TEXT,
 }
-DEFAULT_VECTOR_DIM = 768
+DEFAULT_VECTOR_DIM = milvus_config.embedding_dim
 
 _LOCAL_TASK_STORE: Dict[str, Dict[str, Any]] = {}
 _LOCAL_SEARCH_CACHE: Dict[str, List[Dict[str, Any]]] = {}
@@ -130,6 +131,77 @@ class MatchService:
 
     def __init__(self, parser: Optional[IntentParserService] = None):
         self.parser = parser or intent_parser_service
+
+    def create_campaign(self, user_id: int, spu_id: int) -> int:
+        db_client = _safe_get_db_client()
+        if db_client is None:
+            raise RuntimeError("db client unavailable")
+        db_client.connect()
+        try:
+            spu_record = db_client.get_brand_spu_record(spu_id)
+            if not spu_record:
+                raise ValueError(f"spu_id not found: {spu_id}")
+            initial_vector = spu_record.get("base_vector") or [0.0] * DEFAULT_VECTOR_DIM
+            return db_client.create_campaign_from_spu(user_id, spu_id, initial_vector)
+        finally:
+            db_client.close()
+
+    def search_influencers(self, campaign_id: int, filters: Dict[str, Any], top_k: int = 100) -> List[Dict[str, Any]]:
+        db_client = _safe_get_db_client()
+        manager = milvus_mgr or _safe_get_milvus_manager()
+        if db_client is None or manager is None:
+            return []
+        db_client.connect()
+        try:
+            vector = db_client.get_campaign_intent_vector(campaign_id) or [0.0] * DEFAULT_VECTOR_DIM
+            manager.connect()
+            manager.load_collection()
+            results = manager.hybrid_search(
+                vector_field="embedding",
+                query_vector=vector,
+                scalar_filters=filters or {},
+                top_k=top_k,
+            )
+            ids = [int(item["id"]) for item in results]
+            profile_rows = db_client.get_influencer_profiles_by_ids(ids)
+            profile_map = {int(row["internal_id"]): row for row in profile_rows}
+            ordered = []
+            for item in results:
+                internal_id = int(item["id"])
+                ordered.append(
+                    {
+                        "internal_id": internal_id,
+                        "score": float(item.get("score", 0.0)),
+                        "distance": float(item.get("distance", 0.0)),
+                        "profile": profile_map.get(internal_id, {}),
+                    }
+                )
+            return ordered
+        finally:
+            db_client.close()
+
+    def update_campaign_preference(self, campaign_id: int, liked_id: int, alpha: float = 0.7, beta: float = 0.3) -> List[float]:
+        db_client = _safe_get_db_client()
+        manager = milvus_mgr or _safe_get_milvus_manager()
+        if db_client is None or manager is None:
+            raise RuntimeError("required dependency unavailable")
+        db_client.connect()
+        try:
+            current = db_client.get_campaign_intent_vector(campaign_id) or [0.0] * DEFAULT_VECTOR_DIM
+            manager.connect()
+            vectors = manager.retrieve_by_ids([liked_id])
+            if not vectors:
+                raise ValueError(f"liked influencer not found: {liked_id}")
+            target = vectors[0].get("embedding") or []
+            if len(current) != len(target):
+                max_dim = max(len(current), len(target), DEFAULT_VECTOR_DIM)
+                current = list(current) + [0.0] * (max_dim - len(current))
+                target = list(target) + [0.0] * (max_dim - len(target))
+            new_vector = _normalize_vector((alpha * np.array(current) + beta * np.array(target)).tolist())
+            db_client.update_campaign_dynamic_vector(campaign_id, new_vector)
+            return new_vector
+        finally:
+            db_client.close()
 
     def build_query_context(
         self,
