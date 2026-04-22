@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
@@ -16,11 +18,29 @@ from milvus import milvus_mgr
 
 logger = logging.getLogger(__name__)
 
+# OAuth 配置（建议通过环境变量注入）
+CONFIG = {
+    "app_id": int(os.getenv("XHS_APP_ID", "0")),
+    "secret": os.getenv("XHS_APP_SECRET", ""),
+    "auth_code": os.getenv("XHS_AUTH_CODE", ""),
+    "token_url": os.getenv(
+        "XHS_TOKEN_URL",
+        "https://adapi.xiaohongshu.com/api/open/oauth2/access_token",
+    ),
+    "refresh_url": os.getenv(
+        "XHS_REFRESH_URL",
+        "https://adapi.xiaohongshu.com/api/open/oauth2/refresh_token",
+    ),
+    "token_file": os.getenv(
+        "XHS_TOKEN_FILE",
+        str(Path(__file__).resolve().parent / "token_pgy.json"),
+    ),
+}
+
 XHS_API_URL = os.getenv(
     "XHS_NOTE_API_URL",
     "https://adapi.xiaohongshu.com/api/open/pgy/note/post/data",
 )
-XHS_AUTH_TOKEN = os.getenv("XHS_AUTH_TOKEN", "")
 XHS_AUTH_USER_ID = os.getenv("XHS_AUTH_USER_ID", "")
 XHS_TIMEOUT_SECONDS = int(os.getenv("XHS_TIMEOUT_SECONDS", "20"))
 
@@ -39,17 +59,109 @@ def _extract_embedding(record: Any) -> Optional[List[float]]:
     return vector
 
 
+class TokenManager:
+    """小红书开放平台 access token 管理器。"""
+
+    def __init__(self):
+        self.token_info = self._load_token_from_file()
+
+    def get_token(self) -> str:
+        if not self.token_info or self._is_expired():
+            if self.token_info.get("refresh_token"):
+                try:
+                    self._refresh_token()
+                except Exception as exc:
+                    logger.warning("刷新 token 失败，回退 auth_code 获取新 token: %s", exc)
+                    self._get_new_token()
+            else:
+                self._get_new_token()
+        token = self.token_info.get("access_token")
+        if not token:
+            raise RuntimeError("token 获取失败，access_token 为空")
+        return token
+
+    def _get_new_token(self) -> None:
+        self._validate_auth_config(require_refresh=False)
+        payload = {
+            "app_id": CONFIG["app_id"],
+            "secret": CONFIG["secret"],
+            "auth_code": CONFIG["auth_code"],
+        }
+        response = requests.post(CONFIG["token_url"], json=payload, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("success"):
+            raise RuntimeError(f"获取 token 失败: {result.get('msg')}")
+        data = result.get("data") or {}
+        self.token_info = {
+            "access_token": data.get("access_token"),
+            "refresh_token": data.get("refresh_token"),
+            "expires_at": time.time() + int(data.get("access_token_expires_in") or 0),
+        }
+        self._save_token_to_file()
+
+    def _refresh_token(self) -> None:
+        self._validate_auth_config(require_refresh=True)
+        payload = {
+            "app_id": CONFIG["app_id"],
+            "secret": CONFIG["secret"],
+            "refresh_token": self.token_info.get("refresh_token"),
+        }
+        response = requests.post(CONFIG["refresh_url"], json=payload, timeout=10)
+        response.raise_for_status()
+        result = response.json()
+        if not result.get("success"):
+            raise RuntimeError(f"刷新 token 失败: {result.get('msg')}")
+        data = result.get("data") or {}
+        self.token_info = {
+            "access_token": data.get("access_token"),
+            "refresh_token": data.get("refresh_token"),
+            "expires_at": time.time() + int(data.get("access_token_expires_in") or 0),
+        }
+        self._save_token_to_file()
+
+    def _is_expired(self) -> bool:
+        # 提前 60 秒刷新，避免边界时间并发失败
+        return time.time() >= float(self.token_info.get("expires_at", 0)) - 60
+
+    def _save_token_to_file(self) -> None:
+        token_file = Path(CONFIG["token_file"])
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        with token_file.open("w", encoding="utf-8") as f:
+            json.dump(self.token_info, f, ensure_ascii=False)
+
+    def _load_token_from_file(self) -> Dict[str, Any]:
+        token_file = Path(CONFIG["token_file"])
+        if token_file.exists():
+            try:
+                with token_file.open("r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception:
+                logger.warning("token 文件读取失败，将重新申请 token: %s", token_file)
+        return {}
+
+    @staticmethod
+    def _validate_auth_config(require_refresh: bool) -> None:
+        if not CONFIG["app_id"] or not CONFIG["secret"]:
+            raise RuntimeError("缺少 XHS_APP_ID 或 XHS_APP_SECRET")
+        if not require_refresh and not CONFIG["auth_code"]:
+            raise RuntimeError("缺少 XHS_AUTH_CODE，无法首次换取 token")
+
+
 def fetch_xiaohongshu_daily_data(target_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
     """递归拉取昨日全量投后数据，处理分页。"""
-    if not XHS_AUTH_TOKEN or not XHS_AUTH_USER_ID:
-        raise RuntimeError("缺少 XHS_AUTH_TOKEN 或 XHS_AUTH_USER_ID 环境变量")
+    if not XHS_AUTH_USER_ID:
+        raise RuntimeError("缺少 XHS_AUTH_USER_ID 环境变量")
 
     date = target_date or (datetime.utcnow() - timedelta(days=1))
     day = date.strftime("%Y-%m-%d")
+    access_token = TokenManager().get_token()
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {XHS_AUTH_TOKEN}",
+        "Authorization": f"Bearer {access_token}",
     }
     payload: Dict[str, Any] = {
         "user_id": XHS_AUTH_USER_ID,
