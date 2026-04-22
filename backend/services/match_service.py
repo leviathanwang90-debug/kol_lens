@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from config import milvus_config
 from db import db
 from milvus import FIELD_STYLE, milvus_mgr
 from services.intent_parser import IntentParserService, intent_parser_service, value_to_text
@@ -31,7 +32,9 @@ EXPERIMENT_MODE_CHOICES = {
     EXPERIMENT_MODE_FIELD_TAGS_WEIGHTED,
     EXPERIMENT_MODE_FIELD_TAGS_EXPLICIT_WEIGHT_TEXT,
 }
-DEFAULT_VECTOR_DIM = 768
+DEFAULT_VECTOR_DIM = milvus_config.embedding_dim
+ROCCHIO_ALPHA = 1.0
+ROCCHIO_BETA = 0.2
 
 _LOCAL_TASK_STORE: Dict[str, Dict[str, Any]] = {}
 _LOCAL_SEARCH_CACHE: Dict[str, List[Dict[str, Any]]] = {}
@@ -297,6 +300,72 @@ class MatchService:
             "cached": False,
         }
 
+    def create_campaign(self, user_id: int, spu_id: int) -> int:
+        """工作流 1: 新建项目，冷启动加载品牌 SPU 基因向量。"""
+        db.connect()
+        try:
+            base_vector = db.get_brand_spu_base_vector(spu_id)
+            if not base_vector:
+                raise ValueError(f"SPU[{spu_id}] 缺少 base_vector，请先跑批生成。")
+            return db.create_campaign_from_spu(user_id=user_id, spu_id=spu_id, initial_vector=base_vector)
+        finally:
+            db.close()
+
+    def search_influencers(self, campaign_id: int, filters: Optional[Dict[str, Any]] = None, top_k: int = 100) -> List[Dict[str, Any]]:
+        """工作流 2: Qdrant 查 ID + PostgreSQL 回表组装详情。"""
+        db.connect()
+        try:
+            intent_vector = db.get_campaign_intent_vector(campaign_id)
+            if not intent_vector:
+                raise ValueError(f"campaign_id={campaign_id} 未找到 dynamic_intent_vector。")
+            milvus_mgr.connect()
+            milvus_mgr.load_collection()
+            qdrant_results = milvus_mgr.hybrid_search(
+                query_vector=intent_vector,
+                scalar_filters=filters or {},
+                top_k=top_k,
+            )
+            matched_ids = [int(hit["id"]) for hit in qdrant_results]
+            profiles = db.get_influencer_profiles_by_ids(matched_ids)
+            profiles_map = {int(item["internal_id"]): item for item in profiles}
+            ranked = []
+            for hit in qdrant_results:
+                internal_id = int(hit["id"])
+                ranked.append(
+                    {
+                        "internal_id": internal_id,
+                        "score": float(hit["score"]),
+                        "distance": float(hit["distance"]),
+                        "profile": profiles_map.get(internal_id, {}),
+                    }
+                )
+            return ranked
+        finally:
+            db.close()
+
+    def update_campaign_preference(self, campaign_id: int, liked_id: int, *, alpha: float = ROCCHIO_ALPHA, beta: float = ROCCHIO_BETA) -> List[float]:
+        """工作流 3: 用户反馈触发 Rocchio 向量平移。"""
+        milvus_mgr.connect()
+        records = milvus_mgr.retrieve_by_ids([liked_id], with_vectors=True)
+        if not records:
+            raise ValueError(f"未找到向量 ID: {liked_id}")
+        target_vector = records[0].vector
+        if isinstance(target_vector, dict):
+            target_vector = target_vector.get("embedding") or target_vector.get(FIELD_STYLE)
+        if target_vector is None:
+            raise ValueError(f"向量 ID {liked_id} 缺少 embedding 数据")
+
+        db.connect()
+        try:
+            current_vector = db.get_campaign_intent_vector(campaign_id)
+            if not current_vector:
+                raise ValueError(f"campaign_id={campaign_id} 未找到 dynamic_intent_vector")
+            new_vector = self.calculate_rocchio(current_vector, target_vector, alpha=alpha, beta=beta)
+            db.update_campaign_dynamic_vector(campaign_id, new_vector)
+            return new_vector
+        finally:
+            db.close()
+
     def submit_retrieve_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         task_id = value_to_text(payload.get("task_id")) or uuid.uuid4().hex
         meta = {
@@ -359,6 +428,15 @@ class MatchService:
                 }
             )
         return results
+
+    @staticmethod
+    def calculate_rocchio(current_vector: Sequence[float], target_vector: Sequence[float], *, alpha: float = ROCCHIO_ALPHA, beta: float = ROCCHIO_BETA) -> List[float]:
+        current = np.array(current_vector, dtype=np.float32)
+        target = np.array(target_vector, dtype=np.float32)
+        if current.shape != target.shape:
+            raise ValueError("Rocchio 计算时向量维度不一致")
+        updated = alpha * current + beta * target
+        return _normalize_vector(updated)
 
     @staticmethod
     def _merge_scalar_filters(base_filters: Optional[Dict[str, Any]], extra_filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
