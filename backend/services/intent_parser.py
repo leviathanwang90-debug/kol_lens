@@ -361,7 +361,7 @@ class IntentParserService:
         if llm_enabled is None:
             llm_enabled = os.getenv("KOL_LENS_DISABLE_LLM", "0") != "1"
         self._llm_enabled = bool(llm_enabled)
-        self._model_name = os.getenv("KOL_LENS_INTENT_MODEL", "gpt-4.1-mini")
+        self._model_name = os.getenv("KOL_LENS_INTENT_MODEL", "qwen3.6-plus-2026-04-02")
 
     def parse(self, raw_text: str, brand_name: str = "", spu_name: str = "") -> Dict[str, Any]:
         normalized_text = value_to_text(raw_text)

@@ -351,15 +351,9 @@ def test_milvus(pg_internal_id: int):
     runner.assert_equal(len(results_face), 5, "人脸检索返回 Top-5")
 
     # 2.10 数据一致性验证
-    print("\n[2.10] PG internal_id ↔ Milvus id 映射验证...")
-    # 检索包含 pg_internal_id 的结果
-    from pymilvus import Collection
-    col_check = Collection(milvus_mgr.collection_stats()["name"])
-    check_result = col_check.query(
-        expr=f"id == {pg_internal_id}",
-        output_fields=["followers", "region"],
-    )
-    runner.assert_gte(len(check_result), 1, f"Milvus 中存在 id={pg_internal_id} 的记录")
+    print("\n[2.10] PG internal_id ↔ Vector DB id 映射验证...")
+    check_result = milvus_mgr.retrieve_by_ids([pg_internal_id])
+    runner.assert_gte(len(check_result), 1, f"向量库中存在 id={pg_internal_id} 的记录")
 
     milvus_mgr.release_collection()
     milvus_mgr.disconnect()

@@ -6,8 +6,10 @@
 # --- PostgreSQL ---
 psycopg2-binary>=2.9.9       # PostgreSQL 驱动 (二进制预编译版)
 
-# --- Milvus ---
-pymilvus>=2.4.0              # Milvus Python SDK
+# --- Qdrant ---
+# --- DashVector ---
+dashvector>=1.0.20           # 阿里云 DashVector Python SDK
+requests>=2.32.0             # 跑批 API 请求与 token 刷新
 
 # --- Redis ---
 redis>=5.0.0                 # Redis Python 客户端

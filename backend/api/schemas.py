@@ -20,6 +20,7 @@ class MatchRetrieveRequest(BaseModel):
     raw_text: str = Field(default="", description="原始自然语言查询")
     brand_name: str = Field(default="", description="品牌名")
     spu_name: str = Field(default="", description="SPU 名")
+    campaign_id: Optional[int] = Field(default=None, description="可选：项目 ID，用于融合动态意图向量")
     intent: Optional[Dict[str, Any]] = Field(default=None, description="已解析好的意图对象，可跳过重复解析")
     top_k: int = Field(default=20, ge=1, le=200, description="目标返回数量")
     vector_field: str = Field(default="v_overall_style", description="Milvus 检索向量字段")
@@ -31,6 +32,8 @@ class MatchRetrieveRequest(BaseModel):
     enable_external_expansion: bool = Field(default=True, description="库内结果不足时是否触发蒲公英扩库")
     enable_greedy_degrade: bool = Field(default=True, description="库内结果仍不足时是否执行贪心降级")
     external_page_size: int = Field(default=20, ge=1, le=50, description="外部扩库时的单页请求数量")
+    fusion_alpha: float = Field(default=0.7, ge=0.0, le=2.0, description="campaign 动态向量融合权重")
+    fusion_beta: float = Field(default=0.3, ge=0.0, le=2.0, description="文本语义向量融合权重")
 
 
 class MatchRetrieveResponse(BaseModel):
