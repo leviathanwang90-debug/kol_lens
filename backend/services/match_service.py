@@ -180,7 +180,7 @@ class MatchService:
         finally:
             db_client.close()
 
-    def update_campaign_preference(self, campaign_id: int, liked_id: int, alpha: float = 0.7, beta: float = 0.3) -> List[float]:
+    def update_campaign_preference(self, campaign_id: int, liked_id: int, alpha: float = 1.0, beta: float = 0.2) -> List[float]:
         db_client = _safe_get_db_client()
         manager = milvus_mgr or _safe_get_milvus_manager()
         if db_client is None or manager is None:
@@ -197,7 +197,11 @@ class MatchService:
                 max_dim = max(len(current), len(target), DEFAULT_VECTOR_DIM)
                 current = list(current) + [0.0] * (max_dim - len(current))
                 target = list(target) + [0.0] * (max_dim - len(target))
-            new_vector = _normalize_vector((alpha * np.array(current) + beta * np.array(target)).tolist())
+            shifted = (alpha * np.array(current, dtype=np.float32) + beta * np.array(target, dtype=np.float32)).tolist()
+            try:
+                new_vector = _normalize_vector(shifted)
+            except ValueError:
+                new_vector = _normalize_vector(target)
             db_client.update_campaign_dynamic_vector(campaign_id, new_vector)
             return new_vector
         finally:

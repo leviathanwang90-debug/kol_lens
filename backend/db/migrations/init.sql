@@ -22,8 +22,8 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 -- ============================================================
 CREATE TABLE IF NOT EXISTS users (
     id              SERIAL          PRIMARY KEY,
-    username        VARCHAR(128)    NOT NULL UNIQUE,
-    display_name    VARCHAR(128),
+    username        VARCHAR(64)     NOT NULL UNIQUE,
+    role            VARCHAR(32)     DEFAULT 'operator',
     created_at      TIMESTAMP       DEFAULT NOW()
 );
 
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS brand_spus (
     spu_id          SERIAL          PRIMARY KEY,
     brand_name      VARCHAR(128)    NOT NULL,
     spu_name        VARCHAR(256)    NOT NULL,
-    base_vector     JSONB           DEFAULT '[]'::jsonb,
+    base_vector     JSONB,
     kol_count       INTEGER         DEFAULT 0,
     created_at      TIMESTAMP       DEFAULT NOW(),
     updated_at      TIMESTAMP       DEFAULT NOW()
@@ -39,10 +39,20 @@ CREATE TABLE IF NOT EXISTS brand_spus (
 
 CREATE TABLE IF NOT EXISTS collaborations (
     id              SERIAL          PRIMARY KEY,
-    spu_id          INTEGER         NOT NULL REFERENCES brand_spus(spu_id) ON DELETE CASCADE,
-    influencer_id   INTEGER         NOT NULL,
-    created_at      TIMESTAMP       DEFAULT NOW()
+    influencer_id   INTEGER,
+    spu_id          INTEGER         REFERENCES brand_spus(spu_id) ON DELETE CASCADE,
+    collaboration_date DATE,
+    performance_score DECIMAL(3,2)
 );
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'operator';
+ALTER TABLE brand_spus
+    ADD COLUMN IF NOT EXISTS kol_count INTEGER DEFAULT 0;
+ALTER TABLE collaborations
+    ADD COLUMN IF NOT EXISTS collaboration_date DATE;
+ALTER TABLE collaborations
+    ADD COLUMN IF NOT EXISTS performance_score DECIMAL(3,2);
 
 -- ============================================================
 -- 1. influencer_basics — 达人基础信息表
