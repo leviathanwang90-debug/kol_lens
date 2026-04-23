@@ -15,12 +15,15 @@ backend/
 │   └── seeds/
 │       └── seed_data.py         # 50条模拟达人 + 笔记 + 任务 Seed 数据
 ├── milvus/
-│   └── __init__.py              # Milvus Collection 管理 + Hybrid Search
+│   └── __init__.py              # DashVector 兼容层（保留 MilvusManager 接口）
 ├── redis/
 │   └── __init__.py              # 三层缓存: TaskCache / InfluencerCache / SearchCache
 ├── tests/
 │   └── test_infrastructure.py   # 端到端集成测试
-├── docker-compose.yml           # 基础设施编排 (PG + Redis + Milvus + etcd + MinIO)
+├── docker-compose.yml           # 本地基础设施编排 (PG + Redis)
+├── scripts/
+│   ├── check_aliyun_connectivity.py  # 阿里云三件套联通验收脚本
+│   └── ...
 ├── .env.example                 # 环境变量模板
 ├── requirements.txt             # Python 依赖
 └── README.md                    # 本文件
@@ -36,12 +39,18 @@ cd backend
 # 复制环境变量
 cp .env.example .env
 
-# 启动全部服务 (PostgreSQL + Redis + Milvus + etcd + MinIO)
+# 启动本地依赖 (PostgreSQL + Redis)
 docker-compose up -d
 
 # 查看服务状态
 docker-compose ps
 ```
+
+> 生产环境推荐使用阿里云托管 PostgreSQL / Redis / DashVector，验收命令：
+>
+> ```bash
+> python scripts/check_aliyun_connectivity.py
+> ```
 
 ### 2. 安装 Python 依赖
 

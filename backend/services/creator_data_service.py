@@ -409,7 +409,8 @@ class CreatorFullDataProvider:
         if collects:
             result["cooperate_all_full_collect_median_30"] = int(sorted(collects)[len(collects) // 2])
             result["cooperate_all_full_collect_median_90"] = result["cooperate_all_full_collect_median_30"]
-        if "baby_age" in field_keys:
+        enable_baby_age = os.getenv("CREATOR_DATA_ENABLE_BABY_AGE", "0") == "1"
+        if "baby_age" in field_keys and enable_baby_age:
             result["baby_age"] = self._infer_baby_age(images[:5])
         return result
 

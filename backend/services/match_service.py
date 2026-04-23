@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from config import milvus_config
 from services.intent_parser import IntentParserService, intent_parser_service, value_to_text
 from services.pgy_service import _embed_text_to_style_vector, pgy_expansion_service
 
@@ -33,7 +34,7 @@ EXPERIMENT_MODE_CHOICES = {
     EXPERIMENT_MODE_FIELD_TAGS_WEIGHTED,
     EXPERIMENT_MODE_FIELD_TAGS_EXPLICIT_WEIGHT_TEXT,
 }
-DEFAULT_VECTOR_DIM = 768
+DEFAULT_VECTOR_DIM = milvus_config.embedding_dim
 
 _LOCAL_TASK_STORE: Dict[str, Dict[str, Any]] = {}
 _LOCAL_SEARCH_CACHE: Dict[str, List[Dict[str, Any]]] = {}
@@ -130,6 +131,81 @@ class MatchService:
 
     def __init__(self, parser: Optional[IntentParserService] = None):
         self.parser = parser or intent_parser_service
+
+    def create_campaign(self, user_id: int, spu_id: int) -> int:
+        db_client = _safe_get_db_client()
+        if db_client is None:
+            raise RuntimeError("db client unavailable")
+        db_client.connect()
+        try:
+            spu_record = db_client.get_brand_spu_record(spu_id)
+            if not spu_record:
+                raise ValueError(f"spu_id not found: {spu_id}")
+            initial_vector = spu_record.get("base_vector") or [0.0] * DEFAULT_VECTOR_DIM
+            return db_client.create_campaign_from_spu(user_id, spu_id, initial_vector)
+        finally:
+            db_client.close()
+
+    def search_influencers(self, campaign_id: int, filters: Dict[str, Any], top_k: int = 100) -> List[Dict[str, Any]]:
+        db_client = _safe_get_db_client()
+        manager = milvus_mgr or _safe_get_milvus_manager()
+        if db_client is None or manager is None:
+            return []
+        db_client.connect()
+        try:
+            vector = db_client.get_campaign_intent_vector(campaign_id) or [0.0] * DEFAULT_VECTOR_DIM
+            manager.connect()
+            manager.load_collection()
+            results = manager.hybrid_search(
+                vector_field="embedding",
+                query_vector=vector,
+                scalar_filters=filters or {},
+                top_k=top_k,
+            )
+            ids = [int(item["id"]) for item in results]
+            profile_rows = db_client.get_influencer_profiles_by_ids(ids)
+            profile_map = {int(row["internal_id"]): row for row in profile_rows}
+            ordered = []
+            for item in results:
+                internal_id = int(item["id"])
+                ordered.append(
+                    {
+                        "internal_id": internal_id,
+                        "score": float(item.get("score", 0.0)),
+                        "distance": float(item.get("distance", 0.0)),
+                        "profile": profile_map.get(internal_id, {}),
+                    }
+                )
+            return ordered
+        finally:
+            db_client.close()
+
+    def update_campaign_preference(self, campaign_id: int, liked_id: int, alpha: float = 1.0, beta: float = 0.2) -> List[float]:
+        db_client = _safe_get_db_client()
+        manager = milvus_mgr or _safe_get_milvus_manager()
+        if db_client is None or manager is None:
+            raise RuntimeError("required dependency unavailable")
+        db_client.connect()
+        try:
+            current = db_client.get_campaign_intent_vector(campaign_id) or [0.0] * DEFAULT_VECTOR_DIM
+            manager.connect()
+            vectors = manager.retrieve_by_ids([liked_id])
+            if not vectors:
+                raise ValueError(f"liked influencer not found: {liked_id}")
+            target = vectors[0].get("embedding") or []
+            if len(current) != len(target):
+                max_dim = max(len(current), len(target), DEFAULT_VECTOR_DIM)
+                current = list(current) + [0.0] * (max_dim - len(current))
+                target = list(target) + [0.0] * (max_dim - len(target))
+            shifted = (alpha * np.array(current, dtype=np.float32) + beta * np.array(target, dtype=np.float32)).tolist()
+            try:
+                new_vector = _normalize_vector(shifted)
+            except ValueError:
+                new_vector = _normalize_vector(target)
+            db_client.update_campaign_dynamic_vector(campaign_id, new_vector)
+            return new_vector
+        finally:
+            db_client.close()
 
     def build_query_context(
         self,
@@ -238,6 +314,17 @@ class MatchService:
             experiment_mode=experiment_mode,
             tag_weights=payload.get("tag_weights"),
         )
+        campaign_id = payload.get("campaign_id")
+        fusion_alpha = float(payload.get("fusion_alpha", 0.7) or 0.7)
+        fusion_beta = float(payload.get("fusion_beta", 0.3) or 0.3)
+        fusion_applied = False
+        if campaign_id is not None:
+            query_context["query_vector"], fusion_applied = self._fuse_campaign_and_text_vector(
+                campaign_id=int(campaign_id),
+                text_vector=query_context["query_vector"],
+                alpha=fusion_alpha,
+                beta=fusion_beta,
+            )
         override_vector = payload.get("query_vector_override")
         override_meta = payload.get("query_vector_meta") if isinstance(payload.get("query_vector_meta"), dict) else {}
         if isinstance(override_vector, list) and override_vector:
@@ -282,6 +369,12 @@ class MatchService:
                     "embedding_input_preview": query_context["embedding_input_preview"],
                     "tag_weights_used": query_context["tag_weights_used"],
                     "query_vector_meta": query_context.get("query_vector_meta") or {},
+                    "campaign_fusion": {
+                        "campaign_id": campaign_id,
+                        "applied": fusion_applied,
+                        "alpha": fusion_alpha,
+                        "beta": fusion_beta,
+                    },
                     "results": cached_results,
                     "result_count": len(cached_results),
                     "desired_count": requested_count,
@@ -354,6 +447,12 @@ class MatchService:
             "embedding_input_preview": query_context["embedding_input_preview"],
             "tag_weights_used": query_context["tag_weights_used"],
             "query_vector_meta": query_context.get("query_vector_meta") or {},
+            "campaign_fusion": {
+                "campaign_id": campaign_id,
+                "applied": fusion_applied,
+                "alpha": fusion_alpha,
+                "beta": fusion_beta,
+            },
             "results": final_results,
             "result_count": len(final_results),
             "desired_count": requested_count,
@@ -466,6 +565,35 @@ class MatchService:
             )
         filtered = self._apply_business_filters(results, data_requirements)
         return filtered[:requested_count]
+
+    def _fuse_campaign_and_text_vector(
+        self,
+        *,
+        campaign_id: int,
+        text_vector: Sequence[float],
+        alpha: float,
+        beta: float,
+    ) -> Tuple[List[float], bool]:
+        db_client = _safe_get_db_client()
+        if db_client is None:
+            return list(text_vector), False
+        try:
+            db_client.connect()
+            campaign_vector = db_client.get_campaign_intent_vector(campaign_id)
+        except Exception:
+            return list(text_vector), False
+        finally:
+            try:
+                db_client.close()
+            except Exception:
+                pass
+        if not campaign_vector:
+            return list(text_vector), False
+        max_dim = max(len(campaign_vector), len(text_vector), DEFAULT_VECTOR_DIM)
+        v_campaign = np.array(list(campaign_vector) + [0.0] * (max_dim - len(campaign_vector)), dtype=np.float32)
+        v_text = np.array(list(text_vector) + [0.0] * (max_dim - len(text_vector)), dtype=np.float32)
+        fused = (alpha * v_campaign) + (beta * v_text)
+        return _normalize_vector(fused.tolist()), True
 
     def _retrieve_from_milvus(
         self,
