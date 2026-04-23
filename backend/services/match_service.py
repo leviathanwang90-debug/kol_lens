@@ -314,6 +314,17 @@ class MatchService:
             experiment_mode=experiment_mode,
             tag_weights=payload.get("tag_weights"),
         )
+        campaign_id = payload.get("campaign_id")
+        fusion_alpha = float(payload.get("fusion_alpha", 0.7) or 0.7)
+        fusion_beta = float(payload.get("fusion_beta", 0.3) or 0.3)
+        fusion_applied = False
+        if campaign_id is not None:
+            query_context["query_vector"], fusion_applied = self._fuse_campaign_and_text_vector(
+                campaign_id=int(campaign_id),
+                text_vector=query_context["query_vector"],
+                alpha=fusion_alpha,
+                beta=fusion_beta,
+            )
         override_vector = payload.get("query_vector_override")
         override_meta = payload.get("query_vector_meta") if isinstance(payload.get("query_vector_meta"), dict) else {}
         if isinstance(override_vector, list) and override_vector:
@@ -358,6 +369,12 @@ class MatchService:
                     "embedding_input_preview": query_context["embedding_input_preview"],
                     "tag_weights_used": query_context["tag_weights_used"],
                     "query_vector_meta": query_context.get("query_vector_meta") or {},
+                    "campaign_fusion": {
+                        "campaign_id": campaign_id,
+                        "applied": fusion_applied,
+                        "alpha": fusion_alpha,
+                        "beta": fusion_beta,
+                    },
                     "results": cached_results,
                     "result_count": len(cached_results),
                     "desired_count": requested_count,
@@ -430,6 +447,12 @@ class MatchService:
             "embedding_input_preview": query_context["embedding_input_preview"],
             "tag_weights_used": query_context["tag_weights_used"],
             "query_vector_meta": query_context.get("query_vector_meta") or {},
+            "campaign_fusion": {
+                "campaign_id": campaign_id,
+                "applied": fusion_applied,
+                "alpha": fusion_alpha,
+                "beta": fusion_beta,
+            },
             "results": final_results,
             "result_count": len(final_results),
             "desired_count": requested_count,
@@ -542,6 +565,35 @@ class MatchService:
             )
         filtered = self._apply_business_filters(results, data_requirements)
         return filtered[:requested_count]
+
+    def _fuse_campaign_and_text_vector(
+        self,
+        *,
+        campaign_id: int,
+        text_vector: Sequence[float],
+        alpha: float,
+        beta: float,
+    ) -> Tuple[List[float], bool]:
+        db_client = _safe_get_db_client()
+        if db_client is None:
+            return list(text_vector), False
+        try:
+            db_client.connect()
+            campaign_vector = db_client.get_campaign_intent_vector(campaign_id)
+        except Exception:
+            return list(text_vector), False
+        finally:
+            try:
+                db_client.close()
+            except Exception:
+                pass
+        if not campaign_vector:
+            return list(text_vector), False
+        max_dim = max(len(campaign_vector), len(text_vector), DEFAULT_VECTOR_DIM)
+        v_campaign = np.array(list(campaign_vector) + [0.0] * (max_dim - len(campaign_vector)), dtype=np.float32)
+        v_text = np.array(list(text_vector) + [0.0] * (max_dim - len(text_vector)), dtype=np.float32)
+        fused = (alpha * v_campaign) + (beta * v_text)
+        return _normalize_vector(fused.tolist()), True
 
     def _retrieve_from_milvus(
         self,

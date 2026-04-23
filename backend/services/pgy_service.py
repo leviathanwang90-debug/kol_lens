@@ -144,7 +144,7 @@ class PgyPayloadService:
         if llm_enabled is None:
             llm_enabled = os.getenv("KOL_LENS_DISABLE_LLM", "0") != "1"
         self._llm_enabled = bool(llm_enabled)
-        self._model_name = os.getenv("KOL_LENS_INTENT_MODEL", "gpt-4.1-mini")
+        self._model_name = os.getenv("KOL_LENS_INTENT_MODEL", "qwen3.6-plus-2026-04-02")
         self._category_tree_cache: Optional[Dict[str, Any]] = None
 
     def build_default_payload(self, *, include_optional_defaults: bool = True) -> Dict[str, Any]:
@@ -531,7 +531,7 @@ class PgyExpansionService:
                         db_client.insert_note(note)
                     except Exception as exc:  # pragma: no cover - 单条笔记写入失败不阻塞主流程
                         logger.warning("写入达人笔记失败 red_id=%s note_id=%s: %s", red_id, note.get("note_id"), exc)
-                milvus_rows.append(self._build_milvus_row(internal_id, influencer_payload))
+                milvus_rows.append(self._build_milvus_row(internal_id, influencer_payload, kol_row))
         except Exception as exc:  # pragma: no cover - 依赖运行环境
             logger.warning("外部达人入库失败，已回退为仅返回外部数据: %s", exc)
         finally:
@@ -598,9 +598,31 @@ class PgyExpansionService:
                 "published_at": None,
             }
 
-    def _build_milvus_row(self, internal_id: int, influencer_payload: Dict[str, Any]) -> Dict[str, Any]:
-        query_text = self._build_style_text(influencer_payload)
-        style_vector = _embed_text_to_style_vector(query_text)
+    def _build_milvus_row(
+        self,
+        internal_id: int,
+        influencer_payload: Dict[str, Any],
+        kol_row: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        avatar_url = value_to_text(kol_row.get("headPhoto") or influencer_payload.get("avatar_url"))
+        note_list = list(kol_row.get("noteList") or [])
+        cover_urls: List[str] = []
+        for note in note_list:
+            if not isinstance(note, dict):
+                continue
+            url = value_to_text(note.get("imageUrl") or note.get("imgUrl") or note.get("coverUrl"))
+            if url:
+                cover_urls.append(url)
+            if len(cover_urls) >= 2:
+                break
+        style_vector = _embed_multimodal_profile_vector(
+            avatar_url=avatar_url,
+            cover_urls=cover_urls,
+            dim=DEFAULT_STYLE_DIM,
+        )
+        if not style_vector:
+            query_text = self._build_style_text(influencer_payload)
+            style_vector = _embed_text_to_style_vector(query_text)
         return {
             "id": int(internal_id),
             "followers": _safe_int(influencer_payload.get("followers")),
@@ -701,7 +723,7 @@ def _embed_text_to_style_vector(text: str, *, dim: int = DEFAULT_STYLE_DIM) -> L
     try:
         from openai import OpenAI
 
-        model_name = os.getenv("KOL_LENS_EMBEDDING_MODEL", "text-embedding-3-small")
+        model_name = os.getenv("KOL_LENS_EMBEDDING_MODEL", "qwen3-vl-embedding")
         client = build_openai_client(
             api_key_envs=("KOL_LENS_EMBEDDING_API_KEY",),
             base_url_envs=("KOL_LENS_EMBEDDING_BASE_URL",),
@@ -722,6 +744,40 @@ def _embed_text_to_style_vector(text: str, *, dim: int = DEFAULT_STYLE_DIM) -> L
         rng = np.random.default_rng(seed)
         vector += rng.standard_normal(dim).astype(np.float32)
     return _normalize_vector(vector)
+
+
+def _embed_multimodal_profile_vector(
+    *,
+    avatar_url: str,
+    cover_urls: Sequence[str],
+    dim: int = DEFAULT_STYLE_DIM,
+) -> List[float]:
+    urls = [value_to_text(avatar_url)] + [value_to_text(url) for url in list(cover_urls)[:2]]
+    urls = [url for url in urls if url]
+    if not urls:
+        return []
+    try:
+        model_name = os.getenv("KOL_LENS_EMBEDDING_MODEL", "qwen3-vl-embedding")
+        client = build_openai_client(
+            api_key_envs=("KOL_LENS_EMBEDDING_API_KEY",),
+            base_url_envs=("KOL_LENS_EMBEDDING_BASE_URL",),
+        )
+        weighted_hint = (
+            "为达人生成多模态检索向量：头像权重0.2，第一张笔记封面权重0.4，第二张笔记封面权重0.4。"
+            "只需用于 embedding，不输出文本。"
+        )
+        input_payload: List[Dict[str, Any]] = [{"type": "text", "text": weighted_hint}]
+        for url in urls:
+            input_payload.append({"type": "image_url", "image_url": {"url": url}})
+        embedding = client.embeddings.create(model=model_name, input=input_payload)
+        vector = embedding.data[0].embedding
+        if vector:
+            if len(vector) >= dim:
+                return _normalize_vector(vector[:dim])
+            return _normalize_vector(list(vector) + [0.0] * (dim - len(vector)))
+    except Exception:
+        return []
+    return []
 
 
 
