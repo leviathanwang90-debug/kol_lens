@@ -198,16 +198,22 @@ class Database:
         """创建寻星任务，返回 campaign_id"""
         sql = """
             INSERT INTO campaign_history
-                (brand_name, spu_name, operator_id, operator_role,
-                 intent_snapshot, status)
+                (brand_name, spu_name, user_id, spu_id, operator_id, operator_role,
+                 intent_snapshot, dynamic_intent_vector, status)
             VALUES
-                (%(brand_name)s, %(spu_name)s, %(operator_id)s,
-                 %(operator_role)s, %(intent_snapshot)s::jsonb, 'active')
+                (%(brand_name)s, %(spu_name)s, %(user_id)s, %(spu_id)s, %(operator_id)s,
+                 %(operator_role)s, %(intent_snapshot)s::jsonb, %(dynamic_intent_vector)s::jsonb, 'active')
             RETURNING campaign_id
         """
         data = dict(data)
+        data.setdefault("user_id", None)
+        data.setdefault("spu_id", None)
+        data.setdefault("operator_id", None)
+        data.setdefault("operator_role", 2)
         if isinstance(data.get("intent_snapshot"), (dict, list)):
             data["intent_snapshot"] = json.dumps(data["intent_snapshot"], ensure_ascii=False)
+        if isinstance(data.get("dynamic_intent_vector"), (dict, list)):
+            data["dynamic_intent_vector"] = json.dumps(data["dynamic_intent_vector"], ensure_ascii=False)
 
         with self.get_cursor() as cur:
             cur.execute(sql, data)
@@ -220,6 +226,7 @@ class Database:
         rejected_ids: List[int],
         pending_ids: List[int],
         query_vector: Optional[List[float]] = None,
+        dynamic_intent_vector: Optional[List[float]] = None,
     ) -> None:
         """确认入库：更新任务状态为 committed"""
         sql = """
@@ -228,6 +235,7 @@ class Database:
                 rejected_influencer_ids = %s::jsonb,
                 pending_influencer_ids = %s::jsonb,
                 query_vector_snapshot = %s::jsonb,
+                dynamic_intent_vector = COALESCE(%s::jsonb, dynamic_intent_vector),
                 status = 'committed',
                 committed_at = NOW()
             WHERE campaign_id = %s
@@ -238,8 +246,127 @@ class Database:
                 json.dumps(rejected_ids),
                 json.dumps(pending_ids),
                 json.dumps(query_vector) if query_vector else None,
+                json.dumps(dynamic_intent_vector) if dynamic_intent_vector else None,
                 campaign_id,
             ))
+
+    def get_brand_spu_record(self, spu_id: int) -> Optional[Dict]:
+        sql = "SELECT * FROM brand_spus WHERE spu_id = %s LIMIT 1"
+        with self.get_cursor() as cur:
+            cur.execute(sql, (spu_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_brand_spu_by_name(self, brand_name: str, spu_name: str) -> Optional[Dict]:
+        sql = "SELECT * FROM brand_spus WHERE brand_name = %s AND spu_name = %s LIMIT 1"
+        with self.get_cursor() as cur:
+            cur.execute(sql, (brand_name, spu_name))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def ensure_brand_spu(self, brand_name: str, spu_name: str) -> Dict:
+        sql = """
+            INSERT INTO brand_spus (brand_name, spu_name)
+            VALUES (%s, %s)
+            ON CONFLICT (brand_name, spu_name) DO UPDATE
+            SET updated_at = NOW()
+            RETURNING *
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (brand_name, spu_name))
+            return dict(cur.fetchone())
+
+    def create_campaign_from_spu(self, user_id: int, spu_id: int, initial_vector: List[float]) -> int:
+        spu_record = self.get_brand_spu_record(spu_id)
+        if not spu_record:
+            raise ValueError(f"spu_id not found: {spu_id}")
+        return self.create_campaign(
+            {
+                "brand_name": spu_record["brand_name"],
+                "spu_name": spu_record["spu_name"],
+                "user_id": user_id,
+                "spu_id": spu_id,
+                "operator_id": user_id,
+                "operator_role": 2,
+                "intent_snapshot": {},
+                "dynamic_intent_vector": initial_vector,
+            }
+        )
+
+    def get_campaign_intent_vector(self, campaign_id: int) -> Optional[List[float]]:
+        sql = "SELECT dynamic_intent_vector FROM campaign_history WHERE campaign_id = %s"
+        with self.get_cursor() as cur:
+            cur.execute(sql, (campaign_id,))
+            row = cur.fetchone()
+            return row.get("dynamic_intent_vector") if row else None
+
+    def update_campaign_dynamic_vector(self, campaign_id: int, vector: List[float]) -> None:
+        sql = """
+            UPDATE campaign_history
+            SET dynamic_intent_vector = %s::jsonb
+            WHERE campaign_id = %s
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (json.dumps(vector), campaign_id))
+
+    def get_influencer_profiles_by_ids(self, ids: List[int]) -> List[Dict]:
+        if not ids:
+            return []
+        sql = """
+            SELECT * FROM v_influencer_profile
+            WHERE internal_id = ANY(%s)
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (ids,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_existing_collaboration_ids(self, spu_id: int, influencer_ids: List[int]) -> List[int]:
+        if not influencer_ids:
+            return []
+        sql = """
+            SELECT influencer_id
+            FROM collaborations
+            WHERE spu_id = %s AND influencer_id = ANY(%s)
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (spu_id, influencer_ids))
+            return [int(r["influencer_id"]) for r in cur.fetchall()]
+
+    def insert_collaborations(
+        self,
+        spu_id: int,
+        influencer_ids: List[int],
+        collaboration_date: Optional[Any] = None,
+    ) -> int:
+        if not influencer_ids:
+            return 0
+        sql = """
+            INSERT INTO collaborations (spu_id, influencer_id, collaboration_date)
+            SELECT %s, x, %s
+            FROM unnest(%s::int[]) AS x
+            ON CONFLICT (spu_id, influencer_id) DO NOTHING
+        """
+        with self.get_cursor() as cur:
+            cur.execute(sql, (spu_id, collaboration_date, influencer_ids))
+            return cur.rowcount
+
+    def update_brand_spu_base_vector(self, spu_id: int, vector: List[float], kol_count: Optional[int] = None) -> None:
+        if kol_count is None:
+            sql = """
+                UPDATE brand_spus
+                SET base_vector = %s::jsonb, updated_at = NOW()
+                WHERE spu_id = %s
+            """
+            params = (json.dumps(vector), spu_id)
+        else:
+            sql = """
+                UPDATE brand_spus
+                SET base_vector = %s::jsonb, kol_count = %s, updated_at = NOW()
+                WHERE spu_id = %s
+            """
+            params = (json.dumps(vector), kol_count, spu_id)
+        with self.get_cursor() as cur:
+            cur.execute(sql, params)
 
     def get_campaigns_by_brand(
         self, brand_name: str, spu_name: Optional[str] = None
