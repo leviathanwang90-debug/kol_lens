@@ -4,12 +4,12 @@ Sprint 1 · Task 1.4.1
 
 端到端验证:
   1. PostgreSQL 全部表的 CRUD 操作
-  2. Milvus Collection 的插入与混合检索
+  2. DashVector Collection 的插入与混合检索
   3. Redis 的任务状态全生命周期
-  4. 三套服务之间的数据一致性 (PG internal_id ↔ Milvus id)
+  4. 三套服务之间的数据一致性 (PG internal_id ↔ DashVector id)
 
 执行方式: python -m tests.test_infrastructure
-前置条件: docker-compose up -d (三套服务全部就绪)
+前置条件: PostgreSQL、Redis、DashVector 三套服务全部就绪
 """
 
 import json
@@ -237,20 +237,20 @@ def test_postgresql():
 
 
 # ============================================================
-# Test 2: Milvus Collection 与混合检索
+# Test 2: DashVector Collection 与混合检索
 # ============================================================
 
-def test_milvus(pg_internal_id: int):
+def test_vector_db(pg_internal_id: int):
     print("\n" + "=" * 60)
-    print("🔮 Test 2: Milvus Collection 与混合检索")
+    print("🔮 Test 2: DashVector Collection 与混合检索")
     print("=" * 60)
 
-    from milvus import milvus_mgr, DIM_FACE, DIM_SCENE, DIM_STYLE
+    from milvus import COLLECTION_NAME, milvus_mgr, DIM_FACE, DIM_SCENE, DIM_STYLE
 
     # 2.1 连接
-    print("\n[2.1] 连接 Milvus...")
+    print("\n[2.1] 连接 DashVector...")
     version = milvus_mgr.connect()
-    runner.assert_true(len(version) > 0, f"Milvus 连接成功 (版本: {version})")
+    runner.assert_true(len(version) > 0, f"DashVector 连接成功 (版本: {version})")
 
     # 2.2 创建 Collection
     print("\n[2.2] 创建 Collection...")
@@ -284,7 +284,7 @@ def test_milvus(pg_internal_id: int):
     # 2.4 Collection 统计
     print("\n[2.4] Collection 统计...")
     stats = milvus_mgr.collection_stats()
-    runner.assert_equal(stats["num_entities"], 50, "实体数量为 50")
+    runner.assert_equal(stats["name"], COLLECTION_NAME, "Collection 名称正确")
 
     # 2.5 加载到内存
     print("\n[2.5] 加载 Collection 到内存...")
@@ -505,12 +505,12 @@ def main():
         runner.errors.append(f"PostgreSQL 测试异常: {e}")
 
     try:
-        test_milvus(pg_id or 1)
+        test_vector_db(pg_id or 1)
     except Exception as e:
-        print(f"\n❌ Milvus 测试异常: {e}")
+        print(f"\n❌ DashVector 测试异常: {e}")
         traceback.print_exc()
         runner.failed += 1
-        runner.errors.append(f"Milvus 测试异常: {e}")
+        runner.errors.append(f"DashVector 测试异常: {e}")
 
     try:
         test_redis()

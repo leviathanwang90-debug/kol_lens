@@ -73,7 +73,7 @@ class MilvusManager:
 
         collection = self.client.get(COLLECTION_NAME)
         if not collection:
-            self.client.create(
+            response = self.client.create(
                 name=COLLECTION_NAME,
                 dimension=milvus_config.embedding_dim,
                 metric="cosine",
@@ -84,8 +84,12 @@ class MilvusManager:
                     "ad_ratio": float,
                 },
             )
+            if not response:
+                raise RuntimeError(f"DashVector Collection 创建失败: {response.message}")
             logger.info("DashVector Collection 创建成功: %s", COLLECTION_NAME)
             collection = self.client.get(COLLECTION_NAME)
+            if not collection:
+                raise RuntimeError(f"DashVector Collection 获取失败: {collection.message}")
 
         self.collection = collection
         return self.collection
@@ -100,11 +104,28 @@ class MilvusManager:
         if not self.collection:
             self.create_collection(drop_if_exists=False)
         try:
-            stats = self.collection.stats() if self.collection else {}
+            response = self.collection.stats() if self.collection else None
+            if response and response.output is not None:
+                stats = response.output
+            elif response:
+                stats = {}
+            else:
+                stats = {"error": getattr(response, "message", "stats unavailable")}
         except Exception:
             stats = {}
+        num_entities = 0
+        if isinstance(stats, dict):
+            for key in ("total_doc_count", "doc_count", "count", "num_entities"):
+                value = stats.get(key)
+                if value is not None:
+                    try:
+                        num_entities = int(value)
+                        break
+                    except (TypeError, ValueError):
+                        continue
         return {
             "name": COLLECTION_NAME,
+            "num_entities": num_entities,
             "stats": stats,
         }
 
@@ -186,16 +207,20 @@ class MilvusManager:
             return ""
         conditions: List[str] = []
 
+        def quote_string(value: Any) -> str:
+            escaped = str(value).replace("\\", "\\\\").replace("'", "\\'")
+            return f"'{escaped}'"
+
         regions = filters.get("region")
         if regions:
             if isinstance(regions, str):
                 regions = [regions]
-            escaped = [f"'{str(r).replace("'", "\\'")}'" for r in regions]
+            escaped = [quote_string(r) for r in regions]
             conditions.append(f"region in ({', '.join(escaped)})")
 
         gender = filters.get("gender")
         if gender:
-            conditions.append(f"gender = '{str(gender).replace("'", "\\'")}'")
+            conditions.append(f"gender = {quote_string(gender)}")
 
         if filters.get("followers_min") is not None:
             conditions.append(f"followers >= {int(filters['followers_min'])}")

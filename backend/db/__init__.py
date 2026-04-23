@@ -37,11 +37,14 @@ class Database:
             dbname=pg_config.database,
             user=pg_config.user,
             password=pg_config.password,
+            sslmode=pg_config.sslmode,
+            connect_timeout=pg_config.connect_timeout,
+            application_name=pg_config.application_name,
         )
         logger.info(
-            "PostgreSQL 连接池已初始化: %s@%s:%d/%s (min=%d, max=%d)",
+            "PostgreSQL 连接池已初始化: %s@%s:%d/%s (sslmode=%s, min=%d, max=%d)",
             pg_config.user, pg_config.host, pg_config.port,
-            pg_config.database, self._min_conn, self._max_conn,
+            pg_config.database, pg_config.sslmode, self._min_conn, self._max_conn,
         )
 
     def close(self) -> None:

@@ -48,6 +48,8 @@ def check_postgres(timeout_sec: int) -> CheckResult:
             dbname=pg_config.database,
             user=pg_config.user,
             password=pg_config.password,
+            sslmode=pg_config.sslmode,
+            application_name=pg_config.application_name,
             connect_timeout=max(1, int(timeout_sec)),
         )
         with conn.cursor() as cur:
@@ -74,11 +76,14 @@ def check_redis(timeout_sec: int) -> CheckResult:
         client = redis.Redis(
             host=redis_config.host,
             port=redis_config.port,
+            username=redis_config.username or None,
             password=redis_config.password,
-            db=0,
+            db=redis_config.db,
             decode_responses=True,
             socket_connect_timeout=max(1, int(timeout_sec)),
             socket_timeout=max(1, int(timeout_sec)),
+            ssl=redis_config.ssl,
+            ssl_cert_reqs=redis_config.ssl_cert_reqs if redis_config.ssl else None,
         )
         client.ping()
         info = client.info("server")
@@ -133,9 +138,11 @@ def required_env_snapshot() -> Dict[str, bool]:
         "POSTGRES_DB",
         "POSTGRES_USER",
         "POSTGRES_PASSWORD",
+        "POSTGRES_SSLMODE",
         "REDIS_HOST",
         "REDIS_PORT",
         "REDIS_PASSWORD",
+        "REDIS_SSL",
         "DASHVECTOR_ENDPOINT",
         "DASHVECTOR_API_KEY",
         "DASHVECTOR_COLLECTION",
