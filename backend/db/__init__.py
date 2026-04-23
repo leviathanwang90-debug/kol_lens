@@ -332,17 +332,22 @@ class Database:
             cur.execute(sql, (spu_id, influencer_ids))
             return [int(r["influencer_id"]) for r in cur.fetchall()]
 
-    def insert_collaborations(self, spu_id: int, influencer_ids: List[int]) -> int:
+    def insert_collaborations(
+        self,
+        spu_id: int,
+        influencer_ids: List[int],
+        collaboration_date: Optional[Any] = None,
+    ) -> int:
         if not influencer_ids:
             return 0
         sql = """
-            INSERT INTO collaborations (spu_id, influencer_id)
-            SELECT %s, x
+            INSERT INTO collaborations (spu_id, influencer_id, collaboration_date)
+            SELECT %s, x, %s
             FROM unnest(%s::int[]) AS x
             ON CONFLICT (spu_id, influencer_id) DO NOTHING
         """
         with self.get_cursor() as cur:
-            cur.execute(sql, (spu_id, influencer_ids))
+            cur.execute(sql, (spu_id, collaboration_date, influencer_ids))
             return cur.rowcount
 
     def update_brand_spu_base_vector(self, spu_id: int, vector: List[float], kol_count: Optional[int] = None) -> None:

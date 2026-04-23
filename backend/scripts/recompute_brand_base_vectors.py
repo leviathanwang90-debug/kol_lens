@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import numpy as np
@@ -105,27 +105,48 @@ def _normalize(v: Iterable[float]) -> List[float]:
     return (arr / n).tolist()
 
 
-def fetch_post_campaign_data(page: int, page_size: int, day: str, token: str) -> List[Dict[str, Any]]:
-    note_api_url = os.getenv("XHS_NOTE_API_URL", "")
-    if not note_api_url:
-        return []
-    resp = requests.get(
-        note_api_url,
-        params={"date": day, "page": page, "page_size": page_size},
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=20,
+def fetch_xiaohongshu_daily_data(run_day: Optional[date], token: str, page_size: int = 100) -> List[Dict[str, Any]]:
+    """递归拉取昨日全量投后数据，处理分页。"""
+    note_api_url = os.getenv(
+        "XHS_NOTE_API_URL",
+        "https://adapi.xiaohongshu.com/api/open/pgy/note/post/data",
     )
-    resp.raise_for_status()
-    payload = resp.json()
-    return payload.get("data", []) or []
+    day = (run_day or (datetime.now().date() - timedelta(days=1))).strftime("%Y-%m-%d")
+    auth_user_id = os.getenv("XHS_AUTH_USER_ID", "")
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    base_payload = {
+        "user_id": auth_user_id,
+        "date_type": 2,
+        "start_time": day,
+        "end_time": day,
+        "page_size": page_size,
+    }
+
+    all_notes: List[Dict[str, Any]] = []
+    page_num = 1
+    total_page = 1
+    while page_num <= total_page:
+        payload = dict(base_payload)
+        payload["page_num"] = page_num
+        resp = requests.post(note_api_url, json=payload, headers=headers, timeout=20)
+        resp.raise_for_status()
+        body = resp.json()
+        if not (body.get("code") == 0 and body.get("success")):
+            logger.warning("拉取投后数据失败: page=%s body=%s", page_num, body)
+            break
+        data = body.get("data") or {}
+        all_notes.extend(data.get("datas") or [])
+        total_page = int(data.get("total_page") or page_num)
+        page_num += 1
+    return all_notes
 
 
 def aggregate_by_brand_spu(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], Set[int]]:
     grouped: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
     for row in rows:
-        brand = str(row.get("brand_name") or "").strip()
+        brand = str(row.get("brand_user_name") or row.get("brand_name") or "").strip()
         spu = str(row.get("spu_name") or "").strip()
-        influencer_id = row.get("influencer_id")
+        influencer_id = row.get("kol_id") or row.get("influencer_id")
         if not brand or not spu or influencer_id is None:
             continue
         grouped[(brand, spu)].add(int(influencer_id))
@@ -134,17 +155,7 @@ def aggregate_by_brand_spu(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], 
 
 def recompute_for_day(run_day: date, page_size: int = 200) -> Dict[str, Any]:
     token = TokenManager().get_access_token()
-    rows: List[Dict[str, Any]] = []
-    page = 1
-    while True:
-        chunk = fetch_post_campaign_data(page=page, page_size=page_size, day=run_day.isoformat(), token=token)
-        if not chunk:
-            break
-        rows.extend(chunk)
-        if len(chunk) < page_size:
-            break
-        page += 1
-
+    rows = fetch_xiaohongshu_daily_data(run_day=run_day, token=token, page_size=page_size)
     grouped = aggregate_by_brand_spu(rows)
     db.connect()
     milvus_mgr.connect()
@@ -183,7 +194,7 @@ def recompute_for_day(run_day: date, page_size: int = 200) -> Dict[str, Any]:
 
             total_count = old_count + new_count
             db.update_brand_spu_base_vector(spu_id, _normalize(merged.tolist()), kol_count=total_count)
-            db.insert_collaborations(spu_id, [int(v["id"]) for v in vectors])
+            db.insert_collaborations(spu_id, [int(v["id"]) for v in vectors], collaboration_date=run_day)
             stats["updated"] += 1
     finally:
         db.close()
@@ -195,7 +206,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Recompute brand SPU base vectors incrementally")
     parser.add_argument("--day", default=(date.today() - timedelta(days=1)).isoformat(), help="YYYY-MM-DD")
     parser.add_argument("--page-size", type=int, default=200)
+    parser.add_argument("--cron-hint", action="store_true", help="打印 Linux crontab 示例")
     args = parser.parse_args()
+    if args.cron_hint:
+        logger.info("crontab 示例: 0 2 * * * cd /srv/kol_lens && python backend/scripts/recompute_brand_base_vectors.py")
     day = date.fromisoformat(args.day)
     result = recompute_for_day(day, page_size=args.page_size)
     logger.info("done: %s", result)
