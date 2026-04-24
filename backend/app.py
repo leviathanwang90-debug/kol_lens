@@ -220,6 +220,9 @@ def get_user_memory(
 def list_library(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
+    keyword: str = Query(default=""),
+    brand_name: str = Query(default=""),
+    spu_name: str = Query(default=""),
     region: str = Query(default=""),
     followers_min: Optional[int] = Query(default=None, ge=0),
     followers_max: Optional[int] = Query(default=None, ge=0),
@@ -233,6 +236,9 @@ def list_library(
             {
                 "page": page,
                 "page_size": page_size,
+                "keyword": keyword,
+                "brand_name": brand_name,
+                "spu_name": spu_name,
                 "region": region,
                 "followers_min": followers_min,
                 "followers_max": followers_max,

@@ -19,9 +19,11 @@ import {
   parseIntent,
   retrieveMatches,
   saveExportTemplate,
+  type CreatorDataCatalogResult,
   type CreatorDataFieldDefinition,
   type CreatorDataRow,
   type DecayStrategyConfig,
+  type ExportTemplateListResult,
   type ExportTemplateRecord,
   type FeedbackEvidenceExample,
   type NextBatchResult,
@@ -113,6 +115,15 @@ interface Influencer {
 interface CreatorFieldGroup {
   group: string;
   fields: CreatorDataFieldDefinition[];
+}
+
+interface NotePreview {
+  id: string;
+  title: string;
+  likes: number;
+  cover: string;
+  url: string;
+  publishedAt: string;
 }
 
 const DEFAULT_AVATAR = "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=80&h=80&fit=crop";
@@ -388,42 +399,63 @@ function renderEvidenceLine(item: FeedbackEvidenceExample) {
   return `${item.display_name || `达人 ${item.internal_id}`}${tagText}${decayText}`;
 }
 
+function normalizeNotePreviews(value: unknown): NotePreview[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item, index) => {
+      const row = (item || {}) as Record<string, unknown>;
+      return {
+        id: String(row.note_id || row.id || index),
+        title: String(row.title || row.note_title || row.content_title || row.note_type || `笔记 ${index + 1}`),
+        likes: normalizeNumber(row.likes),
+        cover: String(row.cover_image_url || row.cover || row.image_url || ""),
+        url: String(row.note_url || row.url || ""),
+        publishedAt: String(row.published_at || row.created_at || ""),
+      };
+    })
+    .filter((item) => item.title || item.cover || item.url || item.likes > 0);
+}
+
 function mapInfluencer(result: Record<string, unknown>): Influencer {
+  const profile = (result.profile || {}) as Record<string, unknown>;
+  const raw = (result.raw || {}) as Record<string, unknown>;
+  const source = { ...profile, ...raw, ...result };
   const metrics: Record<string, string | number> = {
-    粉丝数: formatFollowers(result.followers || result.follower_count),
-    广告占比: formatValue(result.ad_ratio),
-    图文预估CPM: formatValue(result.image_cpm || result.estimated_cpm_image),
-    视频预估CPM: formatValue(result.video_cpm || result.estimated_cpm_video),
-    日常阅读中位数: formatValue(result.read_median_daily || result.median_read_daily),
-    日常互动中位数: formatValue(result.engagement_median_daily || result.median_engagement_daily),
+    粉丝数: formatFollowers(source.followers || source.follower_count),
+    广告占比: formatValue(source.ad_ratio || source.ad_ratio_30d),
+    图文预估CPM: formatValue(source.image_cpm || source.estimated_cpm_image || (source.pricing as Record<string, unknown> | undefined)?.estimate_picture_cpm),
+    视频预估CPM: formatValue(source.video_cpm || source.estimated_cpm_video || (source.pricing as Record<string, unknown> | undefined)?.estimate_video_cpm),
+    日常阅读中位数: formatValue(source.read_median_daily || source.median_read_daily),
+    日常互动中位数: formatValue(source.engagement_median_daily || source.median_engagement_daily),
   };
-  Object.entries(result).forEach(([key, value]) => {
-    if (["internal_id", "score", "distance", "nickname", "name", "platform", "avatar_url", "tags", "followers"].includes(key)) return;
+  Object.entries(source).forEach(([key, value]) => {
+    if (["internal_id", "id", "score", "distance", "nickname", "name", "platform", "avatar_url", "tags", "followers", "profile", "raw"].includes(key)) return;
     if (!(key in metrics) && (typeof value === "string" || typeof value === "number")) {
       metrics[prettifyKey(key)] = value;
     }
   });
 
-  const tags = Array.isArray(result.tags)
-    ? (result.tags as unknown[]).map((item) => String(item))
-    : String(result.style_tags || result.content_tags || "")
+  const tags = Array.isArray(source.tags)
+    ? (source.tags as unknown[]).map((item) => String(item))
+    : String(source.style_tags || source.content_tags || "")
         .split(/[,，、]/)
         .map((item) => item.trim())
         .filter(Boolean)
         .slice(0, 6);
 
+  const internalId = normalizeNumber(source.internal_id || source.id);
   return {
-    id: normalizeNumber(result.internal_id || result.id),
-    name: String(result.nickname || result.name || `达人${result.internal_id || result.id || ""}`),
-    avatar: String(result.avatar_url || result.avatar || DEFAULT_AVATAR),
-    platform: String(result.platform || "小红书"),
-    followers: formatFollowers(result.followers || result.follower_count),
-    matchScore: Math.round(normalizeNumber(result.score) * 100),
-    roiProxy: Number((normalizeNumber(result.roi_proxy || result.roi || result.score) || 0).toFixed(2)),
+    id: internalId,
+    name: String(source.nickname || source.name || `达人${internalId || ""}`),
+    avatar: String(source.avatar_url || source.avatar || DEFAULT_AVATAR),
+    platform: String(source.platform || "小红书"),
+    followers: formatFollowers(source.followers || source.follower_count),
+    matchScore: Math.round(normalizeNumber(source.score) * 100),
+    roiProxy: Number((normalizeNumber(source.roi_proxy || source.roi || source.score) || 0).toFixed(2)),
     tags,
     status: "none",
     metrics,
-    raw: result,
+    raw: source,
   };
 }
 
@@ -801,7 +833,7 @@ function DataGridList({
   onRowClick: (influencer: Influencer) => void;
   activeGroup: string;
 }) {
-  const columns = (((COLUMN_GROUPS as Record<string, { columns?: string[] }>)[activeGroup] || {}).columns || []).slice(0, 6);
+  const columns = (((COLUMN_GROUPS as Record<string, { columns?: readonly string[] }>)[activeGroup] || {}).columns || []).slice(0, 6);
   return (
     <div className="overflow-x-auto rounded-xl border border-border/50 bg-card/40">
       <table className="min-w-full text-sm">
@@ -867,11 +899,7 @@ function ReviewModal({
   hasNext: boolean;
   hasPrev: boolean;
 }) {
-  const mockNotes = Array.from({ length: 8 }).map((_, index) => ({
-    id: `${influencer.id}-${index}`,
-    title: `${influencer.name} 笔记样例 ${index + 1}`,
-    likes: 1200 + index * 280,
-  }));
+  const notes = normalizeNotePreviews(influencer.raw.note_previews || influencer.raw.notes);
 
   return (
     <motion.div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -917,17 +945,37 @@ function ReviewModal({
 
           <div className="flex-1 p-5 overflow-y-auto">
             <h4 className="text-xs text-muted-foreground font-chinese mb-4 uppercase tracking-wider">近期笔记</h4>
-            <div className="columns-2 md:columns-3 gap-4 space-y-4">
-              {mockNotes.map((note) => (
-                <div key={note.id} className="break-inside-avoid rounded-xl overflow-hidden border border-border/30 hover:border-primary/30 transition-all group bg-card/50">
-                  <div className="aspect-[3/4] bg-muted flex items-center justify-center"><Eye className="w-8 h-8 text-muted-foreground/30" /></div>
+            {notes.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border/50 p-6 text-sm text-muted-foreground font-chinese">
+                后端暂未返回该达人的笔记预览。
+              </div>
+            ) : (
+              <div className="columns-2 md:columns-3 gap-4 space-y-4">
+                {notes.map((note) => (
+                <a
+                  key={note.id}
+                  href={note.url || undefined}
+                  target={note.url ? "_blank" : undefined}
+                  rel={note.url ? "noreferrer" : undefined}
+                  className="block break-inside-avoid rounded-xl overflow-hidden border border-border/30 hover:border-primary/30 transition-all group bg-card/50"
+                >
+                  <div className="aspect-[3/4] bg-muted flex items-center justify-center overflow-hidden">
+                    {note.cover ? (
+                      <img src={note.cover} alt={note.title} className="w-full h-full object-cover" />
+                    ) : (
+                      <Eye className="w-8 h-8 text-muted-foreground/30" />
+                    )}
+                  </div>
                   <div className="p-3">
                     <p className="text-xs text-foreground font-chinese truncate">{note.title}</p>
-                    <p className="text-[10px] text-muted-foreground mt-1">♥ {note.likes.toLocaleString()}</p>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      {note.likes > 0 ? `♥ ${note.likes.toLocaleString()}` : note.publishedAt || "-"}
+                    </p>
                   </div>
-                </div>
-              ))}
-            </div>
+                </a>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1171,9 +1219,11 @@ export default function Workspace() {
           getCreatorDataCatalog().catch(() => ({ success: true, result: {} })),
           listExportTemplates({ operator_id: context.operatorId, brand_name: context.brand, spu_name: context.spu }).catch(() => ({ success: true, result: {} })),
         ]);
-        const catalogFields = (catalogRes.result?.fields || []) as CreatorDataFieldDefinition[];
-        const defaultFieldKeys = (catalogRes.result?.default_field_keys || []) as string[];
-        const templates = (templateRes.result?.templates || []) as ExportTemplateRecord[];
+        const catalogResult = (catalogRes.result || {}) as CreatorDataCatalogResult;
+        const templateResult = (templateRes.result || {}) as ExportTemplateListResult;
+        const catalogFields = (catalogResult.fields || []) as CreatorDataFieldDefinition[];
+        const defaultFieldKeys = (catalogResult.default_field_keys || []) as string[];
+        const templates = (templateResult.templates || []) as ExportTemplateRecord[];
         setCreatorFieldCatalog(catalogFields);
         setSelectedCreatorFields((prev) => (prev.length > 0 ? prev : defaultFieldKeys));
         setExportTemplates(templates);

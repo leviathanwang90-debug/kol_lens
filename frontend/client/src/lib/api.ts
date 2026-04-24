@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
@@ -241,6 +241,7 @@ export interface LibraryHistoryResult {
   mode?: string;
   influencer_profile?: Record<string, unknown>;
   influencer_history?: LibraryHistoryTimelineItem[];
+  note_previews?: Array<Record<string, unknown>>;
   campaign_timeline?: LibraryHistoryTimelineItem[];
   brand_campaigns?: Array<Record<string, unknown>>;
   record_detail?: FulfillmentRecordDetail;

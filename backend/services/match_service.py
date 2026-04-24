@@ -640,6 +640,11 @@ class MatchService:
                 gender=scalar_filters.get("gender"),
                 limit=requested_count,
             )
+            note_map = {
+                int(row["internal_id"]): db_client.get_notes_by_influencer(int(row["internal_id"]))
+                for row in rows
+                if row.get("internal_id") is not None
+            }
         except Exception as exc:  # pragma: no cover - 依赖运行环境
             logger.warning("PostgreSQL 搜索回退失败: %s", exc)
             return []
@@ -653,6 +658,7 @@ class MatchService:
         query_arr = np.array(query_vector, dtype=np.float32)
         for row in rows:
             profile = dict(row)
+            profile["note_previews"] = note_map.get(int(profile["internal_id"]), [])
             text = self._profile_to_text(profile)
             profile_vector = np.array(embed_text_to_style_vector(text), dtype=np.float32)
             score = float(np.dot(query_arr, profile_vector))
@@ -926,7 +932,12 @@ class MatchService:
             for internal_id in ids:
                 row = db_client.get_influencer_by_id(internal_id)
                 if row:
-                    profiles[internal_id] = dict(row)
+                    profile = dict(row)
+                    try:
+                        profile["note_previews"] = db_client.get_notes_by_influencer(internal_id)
+                    except Exception:
+                        profile["note_previews"] = []
+                    profiles[internal_id] = profile
         except Exception as exc:  # pragma: no cover - 依赖运行环境
             logger.warning("补充 PostgreSQL 达人信息失败，将仅返回向量检索结果: %s", exc)
         finally:

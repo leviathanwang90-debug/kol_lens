@@ -134,6 +134,8 @@ class Database:
 
     def search_influencers(
         self,
+        keyword: Optional[str] = None,
+        internal_ids: Optional[List[int]] = None,
         region: Optional[str] = None,
         followers_min: Optional[int] = None,
         followers_max: Optional[int] = None,
@@ -148,6 +150,15 @@ class Database:
         conditions = []
         params: List[Any] = []
 
+        if internal_ids is not None:
+            if not internal_ids:
+                return [], 0
+            conditions.append("internal_id = ANY(%s)")
+            params.append(internal_ids)
+        if keyword:
+            conditions.append("(nickname ILIKE %s OR red_id ILIKE %s OR tags::text ILIKE %s)")
+            keyword_like = f"%{keyword}%"
+            params.extend([keyword_like, keyword_like, keyword_like])
         if region:
             conditions.append("region = %s")
             params.append(region)

@@ -171,6 +171,16 @@ export default defineConfig({
     port: 3000,
     strictPort: false, // Will find next available port if 3000 is busy
     host: true,
+    proxy: {
+      "/api": {
+        target: process.env.VITE_API_BASE_URL || "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+      "/healthz": {
+        target: process.env.VITE_API_BASE_URL || "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",

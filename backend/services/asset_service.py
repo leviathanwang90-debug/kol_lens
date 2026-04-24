@@ -551,8 +551,22 @@ class AssetService:
         page = max(_to_int(payload.get("page"), 1) or 1, 1)
         page_size = min(max(_to_int(payload.get("page_size"), 20) or 20, 1), 100)
         offset = (page - 1) * page_size
+        brand_name = str(payload.get("brand_name") or "").strip()
+        spu_name = str(payload.get("spu_name") or "").strip()
+        scoped_ids: Optional[List[int]] = None
+        if brand_name or spu_name:
+            if not brand_name:
+                scoped_ids = []
+            else:
+                campaigns = database.get_campaigns_by_brand(brand_name, spu_name=spu_name or None)
+                scoped_ids = []
+                for campaign in campaigns:
+                    scoped_ids.extend(_normalize_id_list(campaign.get("selected_influencer_ids")))
+                scoped_ids = list(dict.fromkeys(scoped_ids))
 
         rows, total = database.search_influencers(
+            keyword=str(payload.get("keyword") or "").strip() or None,
+            internal_ids=scoped_ids,
             region=str(payload.get("region") or "").strip() or None,
             followers_min=_to_int(payload.get("followers_min")),
             followers_max=_to_int(payload.get("followers_max")),
@@ -567,6 +581,10 @@ class AssetService:
         items = []
         for row in rows:
             item = dict(row)
+            if brand_name:
+                item["brand_name"] = brand_name
+            if spu_name:
+                item["spu_name"] = spu_name
             item["history_hint"] = {
                 "detail_path": f"/api/v1/library/history?influencer_id={item.get('internal_id')}",
             }
@@ -581,6 +599,9 @@ class AssetService:
                 "total_pages": (total + page_size - 1) // page_size if page_size else 0,
             },
             "filters": {
+                "keyword": str(payload.get("keyword") or "").strip() or None,
+                "brand_name": brand_name or None,
+                "spu_name": spu_name or None,
                 "region": str(payload.get("region") or "").strip() or None,
                 "followers_min": _to_int(payload.get("followers_min")),
                 "followers_max": _to_int(payload.get("followers_max")),
@@ -618,6 +639,7 @@ class AssetService:
             result["mode"] = "influencer_history"
             result["influencer_profile"] = database.get_influencer_by_id(influencer_id) or {"internal_id": influencer_id}
             result["influencer_history"] = self._build_influencer_history_timeline(influencer_id)
+            result["note_previews"] = database.get_notes_by_influencer(influencer_id)
             return result
 
         if campaign_id is not None:
