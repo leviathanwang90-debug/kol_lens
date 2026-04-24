@@ -1,0 +1,7 @@
+Docker Docs 关键信息：
+- Docker Desktop 在 Windows 上启用 WSL 2 backend 后，默认将该引擎的数据存储在 C:\Users\[USERNAME]\AppData\Local\Docker\wsl。
+- 如需修改位置，可在 Settings -> Resources -> Advanced 中调整 Disk image location。
+
+Microsoft Learn 关键信息：
+- WSL 2 会为每个 Linux 发行版创建一个 Virtual Hard Disk (VHD)，其文件形式为 ext4.vhdx。
+- 这些 VHD 会随着使用自动扩展，因此在安装 WSL / Docker Desktop、首次启动 docker-desktop 发行版后，C 盘出现数 GB 增长是常见现象。

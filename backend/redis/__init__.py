@@ -40,9 +40,18 @@ def _load_redis_client_module():
     spec = importlib.machinery.PathFinder.find_spec("redis", search_paths)
     if spec is None or spec.loader is None:
         raise ImportError("未找到第三方 redis 客户端依赖。")
+
+    local_redis_module = sys.modules.pop("redis", None)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    try:
+        sys.modules["redis"] = module
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        if local_redis_module is not None:
+            sys.modules["redis"] = local_redis_module
+        else:
+            sys.modules.pop("redis", None)
 
 
 redis_client = _load_redis_client_module()
@@ -74,16 +83,25 @@ class RedisManager:
         self._client = redis_client.Redis(
             host=redis_config.host,
             port=redis_config.port,
+            username=redis_config.username or None,
             password=redis_config.password,
-            db=0,
+            db=redis_config.db,
             decode_responses=True,
-            socket_connect_timeout=5,
-            socket_timeout=5,
+            socket_connect_timeout=redis_config.socket_timeout,
+            socket_timeout=redis_config.socket_timeout,
             retry_on_timeout=True,
+            ssl=redis_config.ssl,
+            ssl_cert_reqs=redis_config.ssl_cert_reqs if redis_config.ssl else None,
         )
         # 测试连接
         self._client.ping()
-        logger.info("Redis 连接成功: %s:%d", redis_config.host, redis_config.port)
+        logger.info(
+            "Redis 连接成功: %s:%d db=%d ssl=%s",
+            redis_config.host,
+            redis_config.port,
+            redis_config.db,
+            redis_config.ssl,
+        )
 
     def close(self) -> None:
         """关闭 Redis 连接"""
