@@ -8,16 +8,20 @@ import logging
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from dotenv import load_dotenv
 import psycopg2
 import redis
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+load_dotenv(ROOT_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR / ".env.production", override=False)
 
 from config import pg_config, redis_config
 
@@ -36,6 +40,27 @@ class CheckResult:
 
 def _fmt_ms(start: float) -> float:
     return round((time.time() - start) * 1000, 2)
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert SDK-specific response objects to JSON-safe diagnostics."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
+def _result_payload(result: CheckResult) -> Dict[str, Any]:
+    return {
+        "name": result.name,
+        "ok": result.ok,
+        "latency_ms": result.latency_ms,
+        "detail": result.detail,
+        "extra": _json_safe(result.extra),
+    }
 
 
 def check_postgres(timeout_sec: int) -> CheckResult:
@@ -117,7 +142,8 @@ def check_dashvector() -> CheckResult:
             detail="connected",
             extra={
                 "collection": milvus_config.collection_name,
-                "stats": stats.get("stats", {}),
+                "num_entities": stats.get("num_entities", 0),
+                "stats": _json_safe(stats.get("stats", {})),
             },
         )
     except Exception as exc:
@@ -167,7 +193,7 @@ def main() -> int:
     payload = {
         "all_ok": all_ok,
         "env": env_state,
-        "checks": [asdict(r) for r in results],
+        "checks": [_result_payload(r) for r in results],
     }
 
     if args.json:
